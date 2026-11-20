@@ -14,7 +14,12 @@
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts",
     "assets": "node scripts/create-art.mjs",
     "predev": "npm run assets",
-    "prebuild": "npm run assets"
+    "prebuild": "npm run assets",
+    "validate": "python3 scripts/check-release.py",
+    "verify": "npm test && npm run build && npm run validate",
+    "release": "npm run build && npm run release:zip",
+    "release:zip": "python3 scripts/check-release.py --zip",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "phaser": "4.2.1"
