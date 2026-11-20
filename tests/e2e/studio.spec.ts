@@ -233,10 +233,9 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
   await expect(canvas(page, 'Level')).toBeVisible();
 });
 
-test.describe('touch emulation', () => {
-  test.use({ hasTouch: true, deviceScaleFactor: 2 });
-  test('taps and native drag place goods, with a portrait canvas inside each viewport', async ({ page, browserName }) => {
-    if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
+test.describe('high-density canvas', () => {
+  test.use({ deviceScaleFactor: 2 });
+  test('portrait canvas stays within six viewports without scrolling or zooming', async ({ page }) => {
     await page.goto('./');
     await expect(canvas(page, 'Play')).toBeVisible();
     for (const [width, height] of [[320, 569], [360, 640], [393, 852], [480, 800], [1280, 800], [852, 393]]) {
@@ -258,6 +257,15 @@ test.describe('touch emulation', () => {
       expect(state.density).toBe(960);
       expect(state.zoom).toBe(1);
     }
+  });
+});
+
+test.describe('touch emulation', () => {
+  test.use({ hasTouch: true, deviceScaleFactor: 2 });
+  test('taps and native drag place goods', async ({ page, browserName }) => {
+    if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
+    await page.goto('./');
+    await expect(canvas(page, 'Play')).toBeVisible();
     await tap(page, 240, 553);
     await expect(canvas(page, 'Choose a level')).toBeVisible();
     await tap(page, 142, 350);

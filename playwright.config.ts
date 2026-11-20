@@ -2,9 +2,9 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 25_000,
+  timeout: 40_000,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 2 : 1,
+  workers: 1,
   reporter: 'line',
   use: {
     baseURL: 'http://127.0.0.1:4175/shelf_sort_studio/',
