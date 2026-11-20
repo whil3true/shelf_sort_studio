@@ -3,16 +3,24 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts"
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts",
+    "assets": "node scripts/create-art.mjs",
+    "predev": "npm run assets",
+    "prebuild": "npm run assets"
   },
-  "dependencies": { "phaser": "4.2.1" },
+  "dependencies": {
+    "phaser": "4.2.1"
+  },
   "devDependencies": {
+    "@napi-rs/canvas": "0.1.80",
     "@playwright/test": "1.55.0",
     "@types/node": "22.18.0",
     "typescript": "5.9.3",

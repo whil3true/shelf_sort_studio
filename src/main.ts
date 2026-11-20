@@ -1,19 +1,35 @@
-import Phaser from 'phaser';
+import { AudioRuntime, attachAudioGestures, BrowserAudioOutput } from './audio/AudioRuntime.ts';
+import { openStorage, selectLocale } from './platform/Storage.ts';
+import { attachBrowserLifecycle, Lifecycle } from './platform/Lifecycle.ts';
+import { createPlatform } from './platform/Platform.ts';
+import { StudioScene } from './ui/StudioScene';
 import { mountGame } from './ui/viewport';
 import './style.css';
 
-class StudioScene extends Phaser.Scene {
-  constructor() { super('studio'); }
-  create() {
-    this.add.text(240, 360, 'Shelf Sort Studio', {
-      fontFamily: 'Georgia, serif', fontSize: '40px', color: '#4a3326',
-    }).setOrigin(0.5);
-    const button = this.add.text(240, 460, 'Play', {
-      fontFamily: 'Arial, sans-serif', fontSize: '24px', color: '#fff8eb',
-      backgroundColor: '#39594a', padding: { x: 36, y: 12 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-    button.on('pointerup', () => button.setText('The shop is open'));
-  }
+async function start() {
+  const storage = openStorage();
+  const platform = await createPlatform();
+  const locale = selectLocale(storage.locale, platform.locale, navigator.language);
+  const audio = new AudioRuntime(new BrowserAudioOutput(), storage.volumes);
+  let scene: StudioScene | undefined;
+  const lifecycle = new Lifecycle(platform, blocked => {
+    audio.pauseFor('platform', blocked);
+    scene?.setBlocked(blocked);
+  });
+  attachAudioGestures(audio);
+  attachBrowserLifecycle(lifecycle);
+
+  scene = new StudioScene(storage, locale, {
+    ready: () => lifecycle.ready(),
+    playing: active => lifecycle.playing(active),
+    audio: event => audio.play(event),
+    volumesChanged: () => audio.setVolumes(storage.volumes),
+    rewardedAvailable: lifecycle.rewardedAvailable,
+    interstitial: () => lifecycle.interstitial(),
+    reward: () => lifecycle.reward(),
+  });
+  scene.setBlocked(lifecycle.blocked);
+  mountGame(scene);
 }
 
-mountGame(new StudioScene());
+void start();
