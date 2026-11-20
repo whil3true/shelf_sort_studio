@@ -1,0 +1,36 @@
+{
+  "name": "shelf-sort-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts",
+    "assets": "node scripts/create-art.mjs",
+    "predev": "npm run assets",
+    "prebuild": "npm run assets",
+    "validate": "python3 scripts/check-release.py",
+    "verify": "npm test && npm run build && npm run validate",
+    "release": "npm run build && npm run release:zip",
+    "release:zip": "python3 scripts/check-release.py --zip",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "5.2.8",
+    "@fontsource/lora": "5.2.8",
+    "phaser": "4.2.1"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "0.1.80",
+    "@playwright/test": "1.55.0",
+    "@types/node": "22.18.0",
+    "typescript": "5.9.3",
+    "vite": "7.2.2"
+  }
+}
