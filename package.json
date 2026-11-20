@@ -22,6 +22,8 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource-variable/manrope": "5.2.8",
+    "@fontsource/lora": "5.2.8",
     "phaser": "4.2.1"
   },
   "devDependencies": {

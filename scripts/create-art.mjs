@@ -1,8 +1,13 @@
 import { createCanvas } from '@napi-rs/canvas';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 
 const dir = new URL('../public/assets/art/', import.meta.url);
 mkdirSync(dir, { recursive: true });
+const licenses = new URL('../public/assets/font-licenses/', import.meta.url);
+mkdirSync(licenses, { recursive: true });
+for (const [name, directory] of [['lora', '@fontsource/lora'], ['manrope', '@fontsource-variable/manrope']]) {
+  copyFileSync(new URL(`../node_modules/${directory}/LICENSE`, import.meta.url), new URL(`${name}-OFL.txt`, licenses));
+}
 function save(name, canvas) {
   writeFileSync(new URL(name + '.png', dir), canvas.toBuffer('image/png'));
 }

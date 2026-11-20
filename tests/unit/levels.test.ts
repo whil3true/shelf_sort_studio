@@ -31,7 +31,12 @@ for (const level of LEVELS) {
 
 test('solver returns a winning continuation from an off-route state', () => {
   const session = new Session(LEVELS[5].board);
-  assert.ok(session.move(LEVELS[5].solution[0]));
+  const shelf = session.board.findIndex(row => row.front.some(Boolean) && row.front.includes(null));
+  assert.ok(shelf >= 0);
+  const front = session.board[shelf].front;
+  const alternate = { from: { shelf, slot: front.findIndex(Boolean) }, to: { shelf, slot: front.indexOf(null) } };
+  assert.notDeepEqual(alternate, LEVELS[5].solution[0]);
+  assert.ok(session.move(alternate));
   const state = solve(session.board);
   assert.equal(state.status, 'solved');
   if (state.status === 'solved') for (const step of state.moves) assert.ok(session.move(step));

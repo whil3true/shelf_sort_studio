@@ -12,6 +12,8 @@ MANIFEST = ROOT / 'src/audio/AudioAssetManifest.ts'
 GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint cookie'.split()
 ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (960, 1600), 'shelf': (432, 272),
        'shop': (832, 514), 'victory': (424, 412), 'paper': (880, 880)}
+FONT_LICENSES = {'assets/font-licenses/lora-OFL.txt', 'assets/font-licenses/manrope-OFL.txt'}
+FONT_FILE = re.compile(r'assets/(lora|manrope)-(latin|cyrillic)-[a-zA-Z0-9_.-]+\.woff2')
 ART.update({f'button-{name}': (720, 144) for name in ('green', 'paper', 'red', 'muted')})
 
 
@@ -58,6 +60,11 @@ def verify(names, read, audio):
         header = read(location)[:24]
         require(header.startswith(b'\x89PNG\r\n\x1a\n') and header[12:16] == b'IHDR'
                 and unpack('>II', header[16:24]) == expected, f'Wrong PNG dimensions: {location}')
+    fonts = {tuple(FONT_FILE.fullmatch(name).groups()): name for name in names if FONT_FILE.fullmatch(name)}
+    require(set(fonts) == {(family, alphabet) for family in ('lora', 'manrope') for alphabet in ('latin', 'cyrillic')},
+            'The release needs Latin and Cyrillic font subsets for both families')
+    require(all(read(name).startswith(b'wOF2') for name in fonts.values()), 'Invalid WOFF2 file')
+    require(FONT_LICENSES <= names, 'Missing font licenses')
     require(audio <= names, f'Missing installed audio: {sorted(audio - names)}')
 
 
@@ -76,7 +83,7 @@ def main():
     for name in release:
         compiled = bool(re.fullmatch(r'assets/[a-zA-Z0-9_.-]+\.(js|css)', name))
         raster = name in {f'assets/art/{asset}.png' for asset in ART}
-        require(name == 'index.html' or compiled or raster or name in audio, f'Unexpected ZIP entry: {name}')
+        require(name == 'index.html' or compiled or raster or name in audio or name in FONT_LICENSES or FONT_FILE.fullmatch(name), f'Unexpected ZIP entry: {name}')
         require(not files[name].is_symlink(), f'Symlink in release: {name}')
     path = ROOT / 'yandex-upload-ready.zip'
     with ZipFile(path, 'w', ZIP_DEFLATED, compresslevel=9) as archive:

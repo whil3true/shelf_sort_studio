@@ -3,12 +3,13 @@ import { openStorage, selectLocale } from './platform/Storage.ts';
 import { attachBrowserLifecycle, Lifecycle } from './platform/Lifecycle.ts';
 import { createPlatform } from './platform/Platform.ts';
 import { StudioScene } from './ui/StudioScene';
+import { loadFonts } from './ui/Fonts';
 import { mountGame } from './ui/viewport';
 import './style.css';
 
 async function start() {
   const storage = openStorage();
-  const platform = await createPlatform();
+  const [platform] = await Promise.all([createPlatform(), loadFonts()]);
   const locale = selectLocale(storage.locale, platform.locale, navigator.language);
   const audio = new AudioRuntime(new BrowserAudioOutput(), storage.volumes);
   let scene: StudioScene | undefined;

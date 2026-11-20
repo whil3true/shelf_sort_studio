@@ -2,8 +2,8 @@ import Phaser from 'phaser';
 
 export const ink = '#452f26';
 export const mutedInk = '#715747';
-const serif = 'Georgia, "Times New Roman", serif';
-const sans = 'Arial, sans-serif';
+const serif = '"Studio Serif", Georgia, serif';
+const sans = '"Studio Sans", Arial, sans-serif';
 
 export type Icon = 'back' | 'settings' | 'help' | 'undo' | 'restart' | 'hint' | 'lock' | 'check' | 'arrow';
 export interface ButtonOptions {
@@ -41,7 +41,8 @@ export class StudioView {
   } = {}) {
     const label = this.scene.add.text(x, y, text, {
       fontFamily: options.serif ? serif : sans, fontSize: size,
-      fontStyle: options.bold ? 'bold' : undefined, color: options.color ?? ink,
+      resolution: Math.min(2, Math.max(1, this.scene.scale.gameSize.width / 480)),
+      fontStyle: options.bold || options.serif ? 'bold' : undefined, color: options.color ?? ink,
       align: options.align ?? 'center', wordWrap: { width: options.wrap ?? 436 },
       lineSpacing: 5, padding: { x: 2, y: 3 },
     }).setOrigin(options.align === 'left' ? 0 : 0.5, 0.5);

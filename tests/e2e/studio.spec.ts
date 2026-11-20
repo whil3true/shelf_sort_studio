@@ -1,3 +1,4 @@
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { expect, test, type Page } from '@playwright/test';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
@@ -43,6 +44,19 @@ async function inputMove(page: Page, move: Move, type: 'click' | 'tap' | 'drag',
     await act(page, from.x, from.y);
     await act(page, to.x, to.y);
   }
+}
+
+async function titleInk(page: Page, label: string): Promise<number> {
+  const image = await loadImage(await canvas(page, label).screenshot({ scale: 'css' }));
+  const sample = createCanvas(480, 800);
+  const context = sample.getContext('2d');
+  context.drawImage(image, 0, 0, 480, 800);
+  const pixels = context.getImageData(40, 70, 400, 61).data;
+  let count = 0;
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i] < 120 && pixels[i + 1] < 98 && pixels[i + 2] < 89) count++;
+  }
+  return count;
 }
 
 function readSave(page: Page): Promise<Snapshot> {
@@ -148,6 +162,7 @@ test('SDK locale precedes the first frame and manual language and both volume co
   await mocked(page, 'ru');
   await page.goto('./');
   await expect(canvas(page, 'Играть')).toBeVisible();
+  await expect.poll(() => titleInk(page, 'Играть')).toBeGreaterThan(250);
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   await expect.poll(() => mockValue(page, mock => mock.calls)).toEqual(['init', 'ready']);
   await click(page, 142, 703);
@@ -163,6 +178,7 @@ test('SDK locale precedes the first frame and manual language and both volume co
   expect(save?.volumes.effects).toBeCloseTo(0.75, 1);
   await page.reload();
   await expect(canvas(page, 'Play')).toBeVisible();
+  await expect.poll(() => titleInk(page, 'Play')).toBeGreaterThan(250);
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   expect((await readSave(page))?.volumes).toEqual(save?.volumes);
 });

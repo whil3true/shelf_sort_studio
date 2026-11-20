@@ -6,7 +6,7 @@ const prefix = '/shelf_sort_studio/';
 const dist = resolve('dist');
 if (!existsSync(resolve(dist, 'index.html'))) throw Error('Run npm run build before browser tests.');
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
-  '.png': 'image/png', '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg' };
+  '.png': 'image/png', '.woff2': 'font/woff2', '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg' };
 
 createServer((req, res) => {
   const path = new URL(req.url, 'http://localhost').pathname;
