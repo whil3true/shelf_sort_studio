@@ -12,8 +12,18 @@ type MockSdk = { calls: string[]; events: Record<string, () => void>;
 
 function canvas(page: Page, screen: string) { return page.locator(`canvas[aria-label="${screen}"]`); }
 async function point(page: Page, x: number, y: number) {
-  const box = (await page.locator('canvas[aria-label]').boundingBox())!;
-  return { x: box.x + x * box.width / 480, y: box.y + y * box.height / 800 };
+  return page.locator('canvas[aria-label]').evaluate((canvas, { x, y }) => {
+    const box = canvas.getBoundingClientRect();
+    const style = getComputedStyle(document.body);
+    const inset = (edge: string) => parseFloat(style.getPropertyValue(`--safe-${edge}`)) || 0;
+    const left = inset('left'), right = inset('right'), top = inset('top'), bottom = inset('bottom');
+    const width = box.width - left - right, height = box.height - top - bottom;
+    const fit = Math.min(width / 480, height / 800);
+    return {
+      x: box.x + left + width / 2 + (x - 240) * fit,
+      y: box.y + top + height / 2 + (y - 400) * fit,
+    };
+  }, { x, y });
 }
 async function click(page: Page, x: number, y: number) {
   const at = await point(page, x, y);
@@ -47,11 +57,16 @@ async function inputMove(page: Page, move: Move, type: 'click' | 'tap' | 'drag',
 }
 
 async function titleInk(page: Page, label: string): Promise<number> {
-  const image = await loadImage(await canvas(page, label).screenshot({ scale: 'css' }));
-  const sample = createCanvas(480, 800);
-  const context = sample.getContext('2d');
-  context.drawImage(image, 0, 0, 480, 800);
-  const pixels = context.getImageData(40, 70, 400, 61).data;
+  await expect(canvas(page, label)).toBeVisible();
+  const start = await point(page, 40, 70);
+  const end = await point(page, 440, 131);
+  const image = await loadImage(await page.screenshot({
+    clip: { x: start.x, y: start.y, width: end.x - start.x, height: end.y - start.y },
+    scale: 'css',
+  }));
+  const context = createCanvas(image.width, image.height).getContext('2d');
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, image.width, image.height).data;
   let count = 0;
   for (let i = 0; i < pixels.length; i += 4) {
     if (pixels[i] < 120 && pixels[i + 1] < 98 && pixels[i + 2] < 89) count++;
@@ -235,29 +250,59 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
 
 test.describe('high-density canvas', () => {
   test.use({ deviceScaleFactor: 2 });
-  test('portrait canvas stays within six viewports without scrolling or zooming', async ({ page }) => {
+  test('full-viewport canvas keeps the portrait controls reachable without scrolling or zooming', async ({ page }) => {
     await page.goto('./');
     await expect(canvas(page, 'Play')).toBeVisible();
     for (const [width, height] of [[320, 569], [360, 640], [393, 852], [480, 800], [1280, 800], [852, 393]]) {
       await page.setViewportSize({ width, height });
-      await expect.poll(async () => (await canvas(page, 'Play').boundingBox())!.width).toBeCloseTo(
-        Math.min(width, height * 0.6), 0);
-      const box = (await canvas(page, 'Play').boundingBox())!;
-      expect(box.x).toBeGreaterThanOrEqual(0);
-      expect(box.y).toBeGreaterThanOrEqual(0);
-      expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
-      expect(box.y + box.height).toBeLessThanOrEqual(height + 1);
-      expect(box.width / box.height).toBeCloseTo(0.6, 2);
+      await expect.poll(() => canvas(page, 'Play').boundingBox()).toEqual({ x: 0, y: 0, width, height });
+      await click(page, 142, 703);
+      await expect(canvas(page, 'Settings')).toBeVisible();
+      await click(page, 240, 566);
+      await expect(canvas(page, 'Play')).toBeVisible();
       const state = await page.evaluate(() => ({
         horizontal: document.documentElement.scrollWidth, vertical: document.documentElement.scrollHeight,
-        density: document.querySelector('canvas')?.width, zoom: visualViewport?.scale,
+        backingRatio: document.querySelector('canvas')!.width / document.querySelector('canvas')!.height, zoom: visualViewport?.scale,
       }));
       expect(state.horizontal).toBeLessThanOrEqual(width);
       expect(state.vertical).toBeLessThanOrEqual(height);
-      expect(state.density).toBe(960);
+      expect(state.backingRatio).toBeCloseTo(width / height, 2);
       expect(state.zoom).toBe(1);
     }
   });
+});
+
+test('settings dim both gutters and safe areas through a live landscape resize', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('./');
+  await enter(page);
+  await page.addStyleTag({ content: 'body { --safe-left: 38px; --safe-right: 7px; --safe-top: 18px; --safe-bottom: 28px; }' });
+  await page.setViewportSize({ width: 1278, height: 800 });
+  await expect.poll(async () => (await canvas(page, 'Level').boundingBox())?.width).toBe(1278);
+
+  const cornerLight = async (label: string) => {
+    const image = await loadImage(await canvas(page, label).screenshot({ scale: 'css' }));
+    const context = createCanvas(image.width, image.height).getContext('2d');
+    context.drawImage(image, 0, 0);
+    return [[2, 2], [image.width - 3, 2], [2, image.height - 3], [image.width - 3, image.height - 3]]
+      .map(([x, y]) => context.getImageData(x, y, 1, 1).data[0]);
+  };
+
+  const initial = await cornerLight('Level');
+  await click(page, 433, 54);
+  await expect(canvas(page, 'Settings')).toBeVisible();
+  const dimmed = await cornerLight('Settings');
+  dimmed.forEach((value, index) => expect(initial[index] - value).toBeGreaterThan(60));
+
+  await page.setViewportSize({ width: 852, height: 393 });
+  await expect.poll(async () => (await canvas(page, 'Settings').boundingBox())?.width).toBe(852);
+  const rotated = await cornerLight('Settings');
+  rotated.forEach(value => expect(value).toBeLessThan(180));
+  await page.mouse.click(18, 16);
+  await expect(canvas(page, 'Settings')).toBeVisible();
+  await click(page, 240, 566);
+  const restored = await cornerLight('Level');
+  restored.forEach((value, index) => expect(value - rotated[index]).toBeGreaterThan(60));
 });
 
 test.describe('touch emulation', () => {

@@ -6,7 +6,7 @@ import type { SearchResult } from '../game/Solver.ts';
 import type { AudioEffect } from '../audio/AudioAssetManifest.ts';
 import type { Storage, Locale } from '../platform/Storage.ts';
 import { CHAPTERS, word, type TextKey } from './Locale';
-import { StudioView, mutedInk, type Icon } from './StudioView';
+import { CONTROL_ICONS, StudioView, mutedInk, type Icon } from './StudioView';
 import { configureCamera } from './viewport';
 
 export interface StudioHost {
@@ -24,8 +24,8 @@ type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint';
 interface Gesture {
   id: number; x: number; y: number; origin: Slot | null; dragging: boolean;
 }
-const products = [...GOODS, 'wallpaper', 'shelf', 'shop', 'victory', 'paper',
-  'button-green', 'button-paper', 'button-red', 'button-muted'];
+const art = [...GOODS, 'shelf', 'shop', 'victory', 'wordmark-ru', 'wordmark-en',
+  ...CONTROL_ICONS.map(name => `control-${name}`)];
 
 export class StudioScene extends Phaser.Scene {
   private view!: StudioView;
@@ -57,12 +57,15 @@ export class StudioScene extends Phaser.Scene {
   }
 
   preload() {
-    for (const name of products) this.load.image(name, `./assets/art/${name}.png`);
+    for (const name of art) this.load.image(name, `./assets/art/${name}.png`);
   }
 
   create() {
-    configureCamera(this);
     this.view = new StudioView(this, () => this.host.audio('ui_click'));
+    configureCamera(this, () => {
+      this.view.resizeBackdrop();
+      this.cancelGesture();
+    });
     this.input.on('pointerdown', this.pointerDown, this);
     this.input.on('pointermove', this.pointerMove, this);
     this.input.on('pointerup', this.pointerUp, this);
@@ -124,18 +127,18 @@ export class StudioScene extends Phaser.Scene {
     const label = { menu: this.tr('play'), levels: this.tr('chapters'), game: this.tr('level'), victory: this.tr('won') }[this.screen];
     this.game.canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : label);
     this.host.playing(this.screen === 'game' && !this.modal && !this.busy && !this.session?.won);
-    this.view.image('wallpaper', 240, 400, 480, 800);
     if (this.screen === 'menu') this.drawMenu();
     else if (this.screen === 'levels') this.drawLevels();
     else if (this.screen === 'game') this.drawGame();
     else this.drawVictory();
-    if (this.modal) this.drawOverlay(this.modal);
     if (this.busy) {
-      this.view.box(240, 400, 482, 802, 0x281e1a, 0.6, 0);
-      this.view.hit(240, 400, 480, 800, false);
-      this.view.image('paper', 240, 400, 345, 120);
+      this.view.backdrop(0.6);
+      this.view.surface('panel', 240, 400, 345, 120);
       this.view.label(this.tr(this.busyNotice), 240, 395, 22, { bold: true, wrap: 310 });
-    } else if (this.blocked) {
+    } else if (this.modal) {
+      this.drawOverlay(this.modal);
+    }
+    if (this.blocked) {
       this.view.hit(240, 400, 480, 800, false);
     }
   }
@@ -146,14 +149,13 @@ export class StudioScene extends Phaser.Scene {
 
   private drawMenu() {
     const view = this.view;
-    view.label(this.tr('titleTop'), 240, 103, this.locale === 'ru' ? 67 : 68, { serif: true, bold: true });
-    view.label(this.tr('titleBottom'), 240, 164, 56, { serif: true, bold: true, color: '#41604e' });
+    view.image(`wordmark-${this.locale}`, 240, 134, 400, 142);
     view.label(this.tr('theme'), 240, 220, 19, { color: mutedInk });
     view.image('shop', 240, 376, 416, 257);
     view.button(240, 553, 382, 67, this.tr('play'), () => {
       this.chapter = Math.floor(((this.store.currentLevel ?? this.store.nextLevel ?? 18) - 1) / 6);
       this.go('levels');
-    }, { kind: 'green', size: 27 });
+    }, { kind: 'sage', size: 27 });
     const active = this.store.currentLevel;
     view.button(240, 621, 382, 61, active === null ? this.tr('resume') : `${this.tr('resume')} · ${this.tr('level')} ${active}`,
       () => { if (active !== null) this.open(active); }, { live: active !== null });
@@ -172,23 +174,23 @@ export class StudioScene extends Phaser.Scene {
     this.header(this.tr('chapters'), () => this.go('menu'));
     for (let index = 0; index < CHAPTERS.length; index++) {
       view.button(101 + index * 139, 128, 132, 54, `${this.tr('chapter')} ${index + 1}`,
-        () => { this.chapter = index; this.draw(); }, { kind: this.chapter === index ? 'green' : 'paper', size: 18 });
+        () => { this.chapter = index; this.draw(); }, { kind: this.chapter === index ? 'sage' : 'paper', size: 18 });
     }
     const levels = LEVELS.filter(item => item.chapter === this.chapter);
     const cleared = levels.filter(item => this.store.isCleared(item.id)).length;
-    view.image('paper', 240, 445, 430, 536);
+    view.surface('panel', 240, 446, 430, 544);
     view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 30, { serif: true, bold: true });
     view.label(`${cleared}/6 ${this.tr('completed')}`, 240, 262, 19, { color: mutedInk });
     for (const [index, item] of levels.entries()) {
       const x = 142 + index % 2 * 196;
-      const y = 330 + Math.floor(index / 2) * 144;
+      const y = 356 + Math.floor(index / 2) * 136;
       const live = this.store.isUnlocked(item.id);
       const done = this.store.isCleared(item.id);
-      view.button(x, y + 20, 168, 100, String(item.id).padStart(2, '0'), () => this.tryOpen(item.id), {
-        kind: live && !done ? 'green' : 'paper', size: 33, live, icon: done ? 'check' : live ? undefined : 'lock',
-      });
       const description = done ? this.tr('cleared') : live ? this.tr('level') : this.tr('locked');
-      view.label(description, x, y + 77, 17, { color: mutedInk });
+      view.button(x, y, 168, 108, String(item.id).padStart(2, '0'), () => this.tryOpen(item.id), {
+        kind: live && !done ? 'sage' : 'paper', size: 33, live, icon: done ? 'check' : live ? undefined : 'lock',
+        caption: description,
+      });
     }
   }
 
@@ -214,8 +216,8 @@ export class StudioScene extends Phaser.Scene {
     this.header(`${this.tr('level')} ${String(this.level).padStart(2, '0')}`, () => this.go('levels'), true);
     view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 18, { color: mutedInk });
     const intro: TextKey = this.level === 1 ? 'intro' : this.level <= 3 ? 'pair' : this.level <= 6 ? 'hidden' : 'goal';
-    view.image('paper', 240, 147, 427, 58);
-    view.label(this.tr(intro), 240, 144, 18, { wrap: 393 });
+    view.surface('notice', 240, 147, 427, 58);
+    view.label(this.tr(intro), 240, 147, 18, { wrap: 397 });
     for (const [index, shelf] of board.entries()) {
       const { x, y } = this.shelfPosition(index, board.length);
       view.image('shelf', x, y, 216, 136);
@@ -431,11 +433,11 @@ export class StudioScene extends Phaser.Scene {
 
   private drawVictory() {
     const next = this.level < 18 ? this.level + 1 : null;
-    this.view.image('paper', 240, 402, 424, 634);
+    this.view.surface('panel', 240, 402, 424, 634);
     this.view.image('victory', 240, 277, 228, 222);
     this.view.label(this.tr(next ? 'won' : 'wonAll'), 240, 421, 39, { serif: true, bold: true, wrap: 388 });
     this.view.label(this.tr(next ? 'wonText' : 'wonAllText'), 240, 478, 21, { color: mutedInk });
-    if (next) this.view.button(240, 564, 359, 64, this.tr('next'), () => this.open(next), { kind: 'green', icon: 'arrow' });
+    if (next) this.view.button(240, 564, 359, 64, this.tr('next'), () => this.open(next), { kind: 'sage', icon: 'arrow' });
     this.view.button(240, 634, 359, 60, this.tr('levelSelect'), () => this.go('levels'), { icon: 'back' });
   }
 
@@ -447,10 +449,9 @@ export class StudioScene extends Phaser.Scene {
 
   private drawOverlay(modal: Modal) {
     const view = this.view;
-    view.box(240, 400, 482, 802, 0x30211b, 0.57, 0);
-    view.hit(240, 400, 480, 800, false);
+    view.backdrop(0.49);
     if (modal === 'settings') {
-      view.image('paper', 240, 400, 430, 462);
+      view.surface('panel', 240, 400, 430, 462);
       view.label(this.tr('settings'), 240, 219, 35, { bold: true, serif: true });
       view.label(this.tr('language'), 69, 276, 20, { align: 'left', bold: true });
       for (const [index, locale] of (['ru', 'en'] as const).entries()) {
@@ -459,25 +460,25 @@ export class StudioScene extends Phaser.Scene {
           this.store.setLocale(locale);
           this.applyLocale();
           this.draw();
-        }, { kind: this.locale === locale ? 'green' : 'paper', size: 20 });
+        }, { kind: this.locale === locale ? 'sage' : 'paper', size: 20 });
       }
       this.slider('music', 402);
       this.slider('effects', 486);
-      view.button(240, 566, 340, 59, this.tr('close'), () => this.overlay(null), { kind: 'green' });
+      view.button(240, 566, 340, 59, this.tr('close'), () => this.overlay(null), { kind: 'sage' });
       return;
     }
     if (modal === 'help') {
-      view.image('paper', 240, 402, 431, 560);
+      view.surface('panel', 240, 402, 431, 560);
       view.label(this.tr('help'), 240, 181, 36, { bold: true, serif: true });
       const examples = ['pear', 'jam', 'tea', 'honey'] as const;
       for (const [index, name] of examples.entries()) {
         view.image(name, 81, 261 + index * 85, 49, 49);
         view.label(this.tr((`help${index + 1}`) as TextKey), 112, 259 + index * 85, 20, { align: 'left', wrap: 299 });
       }
-      view.button(240, 614, 341, 61, this.tr('close'), () => this.overlay(null), { kind: 'green' });
+      view.button(240, 614, 341, 61, this.tr('close'), () => this.overlay(null), { kind: 'sage' });
       return;
     }
-    view.image('paper', 240, 400, 430, 284);
+    view.surface('panel', 240, 400, 430, 284);
     view.label(this.modalLabel(modal), 240, 319, 29, { bold: true, serif: true });
     const details = { restart: 'restartText', replace: 'replaceText', hint: 'hintText' } as const;
     view.label(this.tr(details[modal]), 240, 389, 20, { wrap: 340 });
@@ -491,7 +492,7 @@ export class StudioScene extends Phaser.Scene {
           this.store.saveRun(this.level, this.session!);
           this.overlay(null);
         }
-      }, { kind: modal === 'hint' ? 'green' : 'red', size: 18 });
+      }, { kind: modal === 'hint' ? 'sage' : 'clay', size: 18 });
   }
 
   private slider(channel: 'music' | 'effects', y: number) {
@@ -501,9 +502,9 @@ export class StudioScene extends Phaser.Scene {
     view.label(this.tr(channel), left, y - 20, 20, { align: 'left', bold: true });
     const value = this.store.volumes[channel];
     const number = view.label(`${Math.round(value * 100)}%`, 373, y - 20, 17, { color: mutedInk });
-    view.box(left + width / 2, y + 12, width, 8, 0xd0b692, 1, 4);
-    const fill = view.box(left, y + 12, width, 8, 0x54745b, 1, 4);
-    const thumb = view.box(left + value * width, y + 12, 22, 22, 0x54745b, 1, 11, 0xf6dfb5);
+    view.box(left + width / 2, y + 12, width, 8, 0xdac5a6, 1, 4);
+    const fill = view.box(left, y + 12, width, 8, 0x6f7d5c, 1, 4);
+    const thumb = view.box(left + value * width, y + 12, 22, 22, 0x6f7d5c, 1, 11, 0xfff2db);
     const render = (updated: number) => {
       const pixels = updated * width;
       fill.setScale(Math.max(0.001, updated), 1).setX(left + pixels / 2);

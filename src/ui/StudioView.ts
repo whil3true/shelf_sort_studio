@@ -2,22 +2,43 @@ import Phaser from 'phaser';
 
 export const ink = '#452f26';
 export const mutedInk = '#715747';
+const olive = '#303d2e';
 const serif = '"Studio Serif", Georgia, serif';
 const sans = '"Studio Sans", Arial, sans-serif';
 
-export type Icon = 'back' | 'settings' | 'help' | 'undo' | 'restart' | 'hint' | 'lock' | 'check' | 'arrow';
+export const CONTROL_ICONS = ['undo', 'restart', 'hint'] as const;
+type ControlIcon = (typeof CONTROL_ICONS)[number];
+export type Icon = 'back' | 'settings' | 'help' | 'lock' | 'check' | 'arrow' | ControlIcon;
+
+const surfaces = {
+  sage: { top: '#cbd4b6', bottom: '#b5c09f', radius: 12 },
+  paper: { top: '#fff8ea', bottom: '#f4e5cc', radius: 12 },
+  clay: { top: '#edc3af', bottom: '#dfaa96', radius: 12 },
+  muted: { top: '#eee2cc', bottom: '#e9d9c0', radius: 12 },
+  panel: { top: '#fffaf0', bottom: '#f9edd9', radius: 18 },
+  notice: { top: '#fff8eb', bottom: '#f7ebd7', radius: 10 },
+} as const;
+type Surface = keyof typeof surfaces;
+const surfacePadding = 8;
+
+function isControlIcon(icon: Icon): icon is ControlIcon {
+  return icon === 'undo' || icon === 'restart' || icon === 'hint';
+}
 export interface ButtonOptions {
-  kind?: 'green' | 'paper' | 'red' | 'muted';
+  kind?: 'sage' | 'paper' | 'clay';
   live?: boolean;
   icon?: Icon;
   size?: number;
   quiet?: boolean;
+  caption?: string;
 }
 
 export class StudioView {
   private readonly scene: Phaser.Scene;
   private layer: Phaser.GameObjects.Container;
   private readonly onClick: () => void;
+  private readonly density = Math.min(2, Math.max(1, Math.ceil(window.devicePixelRatio || 1)));
+  private dimmer: Phaser.GameObjects.Rectangle | null = null;
 
   constructor(scene: Phaser.Scene, onClick: () => void) {
     this.scene = scene;
@@ -27,6 +48,7 @@ export class StudioView {
 
   clear() {
     this.layer.destroy();
+    this.dimmer = null;
     this.layer = this.scene.add.container();
   }
 
@@ -36,12 +58,53 @@ export class StudioView {
     return image;
   }
 
+  surface(kind: Surface, x: number, y: number, width: number, height: number) {
+    const padding = surfacePadding;
+    const textureWidth = width + 2 * padding;
+    const textureHeight = height + 2 * padding;
+    const key = `surface-${kind}-${width}x${height}@${this.density}`;
+    const textures = this.scene.textures;
+    if (!textures.exists(key)) {
+      // Cache one raster per logical size. Scaling the camera keeps all four corners circular.
+      const texture = textures.createCanvas(key, textureWidth * this.density, textureHeight * this.density)!;
+      const ctx = texture.getContext();
+      const { top, bottom, radius } = surfaces[kind];
+      ctx.scale(this.density, this.density);
+      ctx.beginPath();
+      ctx.roundRect(padding, padding, width, height, radius);
+      ctx.shadowColor = 'rgba(93, 61, 36, 0.18)';
+      ctx.shadowBlur = 5 * this.density;
+      ctx.shadowOffsetY = 2 * this.density;
+      const color = ctx.createLinearGradient(0, padding, 0, padding + height);
+      color.addColorStop(0, top);
+      color.addColorStop(1, bottom);
+      ctx.fillStyle = color;
+      ctx.fill();
+      texture.refresh();
+    }
+    return this.image(key, x, y, textureWidth, textureHeight);
+  }
+
+  backdrop(alpha: number) {
+    this.dimmer = this.scene.add.rectangle(0, 0, 1, 1, 0x35291f, alpha);
+    this.layer.add(this.dimmer);
+    this.resizeBackdrop();
+    this.dimmer.setInteractive();
+  }
+
+  resizeBackdrop() {
+    if (!this.dimmer) return;
+    const { zoom, scrollX, scrollY, width, height } = this.scene.cameras.main;
+    this.dimmer.setPosition(scrollX + width / 2, scrollY + height / 2)
+      .setSize((width + 2) / zoom, (height + 2) / zoom);
+  }
+
   label(text: string, x: number, y: number, size = 23, options: {
     color?: string; bold?: boolean; serif?: boolean; align?: 'left' | 'center'; wrap?: number;
   } = {}) {
     const label = this.scene.add.text(x, y, text, {
       fontFamily: options.serif ? serif : sans, fontSize: size,
-      resolution: Math.min(2, Math.max(1, this.scene.scale.gameSize.width / 480)),
+      resolution: this.density,
       fontStyle: options.bold || options.serif ? 'bold' : undefined, color: options.color ?? ink,
       align: options.align ?? 'center', wordWrap: { width: options.wrap ?? 436 },
       lineSpacing: 5, padding: { x: 2, y: 3 },
@@ -58,7 +121,7 @@ export class StudioView {
     return g;
   }
 
-  icon(name: Icon, x: number, y: number, color = 0x553c31, scale = 1) {
+  icon(name: Exclude<Icon, ControlIcon>, x: number, y: number, color: number, scale: number) {
     const g = this.scene.add.graphics({ x, y }).setScale(scale);
     this.layer.add(g);
     g.lineStyle(2, color, 1).fillStyle(color, 1);
@@ -84,17 +147,6 @@ export class StudioView {
       lines(-3, -3, -2, -5, 2, -5, 3, -2, 0, 1);
       g.fillCircle(0, 5, 1.2);
     }
-    if (name === 'restart') {
-      g.beginPath().arc(0, 0, 7, -1, Math.PI * 1.17, false).strokePath();
-      lines(-8, -8, -8, -3, -3, -4);
-    }
-    if (name === 'undo') {
-      lines(-3, -7, -8, -2, -3, 3);
-      g.beginPath().moveTo(-7, -2).lineTo(2, -2).arc(2, 2, 4, -Math.PI / 2, Math.PI * 0.6, false).strokePath();
-    }
-    if (name === 'hint') {
-      lines(0, -9, 2, -2, 8, 0, 2, 2, 0, 9, -2, 2, -8, 0, -2, -2, 0, -9);
-    }
     return g;
   }
 
@@ -107,21 +159,28 @@ export class StudioView {
   button(x: number, y: number, w: number, h: number, text: string, action: () => void, options: ButtonOptions = {}) {
     const live = options.live !== false;
     const kind = live ? options.kind ?? 'paper' : 'muted';
-    const dark = kind === 'green' || kind === 'red';
-    const background = this.image(`button-${kind}`, x, y + h * 0.03, w, h);
-    const color = dark ? '#fff6e1' : live ? ink : '#796350';
-    this.label(text, x + (text && options.icon ? 12 : 0), y - 2,
-      options.size ?? 22, { color, bold: true, wrap: w - 10 });
-    if (options.icon) this.icon(options.icon, x - (text ? w / 2 - 20 : 0), y - 2,
-      dark ? 0xfff6e1 : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
+    const background = this.surface(kind, x, y, w, h - 6);
+    const color = kind === 'sage' ? olive : live ? ink : mutedInk;
+    const icon = options.icon;
+    const controlIcon = icon !== undefined && isControlIcon(icon);
+    const labelY = options.caption ? y - 16 : y;
+    this.label(text, x + (text && icon && !options.caption ? (controlIcon ? 13 : 10) : 0), labelY,
+      options.size ?? 22, { color, bold: true, wrap: w - (text && icon ? 36 : 12) });
+    if (options.caption) this.label(options.caption, x, y + 23, 17, { color: mutedInk, wrap: w - 24 });
+    if (controlIcon) {
+      this.image(`control-${icon}`, x - w / 2 + 21, y, 27, 27).setAlpha(live ? 1 : 0.74);
+    } else if (icon) {
+      this.icon(icon, x - (text ? w / 2 - 22 : 0), labelY,
+        kind === 'sage' ? 0x303d2e : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
+    }
     if (!live) return;
     const zone = this.hit(x, y, w - 3, h - 6);
     let pressed = false;
-    zone.on('pointerover', () => background.setTint(0xfff8e7));
-    zone.on('pointerout', () => { pressed = false; background.clearTint(); });
-    zone.on('pointerdown', () => { pressed = true; background.setTint(0xe5d1b0); });
+    zone.on('pointerover', () => background.setAlpha(0.88));
+    zone.on('pointerout', () => { pressed = false; background.setAlpha(1); });
+    zone.on('pointerdown', () => { pressed = true; background.setAlpha(0.72); });
     zone.on('pointerup', () => {
-      background.clearTint();
+      background.setAlpha(1);
       if (!pressed) return;
       pressed = false;
       if (!options.quiet) this.onClick();
