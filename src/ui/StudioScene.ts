@@ -121,11 +121,17 @@ export class StudioScene extends Phaser.Scene {
     this.draw();
   }
 
+  private syncScreenLabel = () => {
+    const label = { menu: this.tr('play'), levels: this.tr('chapters'), game: this.tr('level'), victory: this.tr('won') }[this.screen];
+    this.game.canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : label);
+  };
+
   private draw() {
     this.view.clear();
     this.ghost = null;
-    const label = { menu: this.tr('play'), levels: this.tr('chapters'), game: this.tr('level'), victory: this.tr('won') }[this.screen];
-    this.game.canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : label);
+    // Phaser registers the new input zones during PRE_UPDATE, before exposing the screen.
+    this.events.off(Phaser.Scenes.Events.PRE_UPDATE, this.syncScreenLabel);
+    this.events.once(Phaser.Scenes.Events.PRE_UPDATE, this.syncScreenLabel);
     this.host.playing(this.screen === 'game' && !this.modal && !this.busy && !this.session?.won);
     if (this.screen === 'menu') this.drawMenu();
     else if (this.screen === 'levels') this.drawLevels();
