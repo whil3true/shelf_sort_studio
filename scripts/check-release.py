@@ -8,6 +8,8 @@ import re
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / 'dist'
+ART_REFRESH_DIRS = {'items', 'shelves', 'logo', 'ui'}
+ART_REFRESH_PLACEHOLDERS = {f'assets/art-refresh/{folder}/.gitkeep' for folder in ART_REFRESH_DIRS}
 MANIFEST = ROOT / 'src/audio/AudioAssetManifest.ts'
 GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint cookie'.split()
 ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (432, 272),
@@ -16,6 +18,10 @@ ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (43
 FONT_LICENSES = {'assets/font-licenses/lora-OFL.txt', 'assets/font-licenses/manrope-OFL.txt'}
 FONT_FILE = re.compile(r'assets/(lora|manrope)-(latin|cyrillic)-[a-zA-Z0-9_.-]+\.woff2')
 ART.update({f'control-{name}': (96, 96) for name in ('undo', 'restart', 'hint')})
+ART_REFRESH = {f'assets/art-refresh/items/{name}.webp' for name in GOODS} | {
+    'assets/art-refresh/shelves/shelf.webp', 'assets/art-refresh/logo/wordmark-ru.webp',
+    'assets/art-refresh/logo/wordmark-en.webp',
+}
 
 
 class EntryPage(HTMLParser):
@@ -45,7 +51,7 @@ def allowed_audio():
     return enabled
 
 
-def verify(names, read, audio):
+def verify(names, read, audio, refresh):
     require('index.html' in names, 'Missing root index.html')
     require(all('/sdk.js' not in '/' + name for name in names), 'SDK must not be shipped in the ZIP')
     page = EntryPage()
@@ -61,6 +67,11 @@ def verify(names, read, audio):
         header = read(location)[:24]
         require(header.startswith(b'\x89PNG\r\n\x1a\n') and header[12:16] == b'IHDR'
                 and unpack('>II', header[16:24]) == expected, f'Wrong PNG dimensions: {location}')
+    require(refresh <= names, f'Missing installed WebP: {sorted(refresh - names)}')
+    for location in refresh:
+        data = read(location)
+        require(len(data) >= 20 and data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+                and unpack('<I', data[4:8])[0] == len(data) - 8, f'Invalid WebP: {location}')
     fonts = {tuple(FONT_FILE.fullmatch(name).groups()): name for name in names if FONT_FILE.fullmatch(name)}
     require(set(fonts) == {(family, alphabet) for family in ('lora', 'manrope') for alphabet in ('latin', 'cyrillic')},
             'The release needs Latin and Cyrillic font subsets for both families')
@@ -74,16 +85,17 @@ def main():
     parser.add_argument('--zip', action='store_true', help='Create and verify yandex-upload-ready.zip')
     args = parser.parse_args()
     audio = allowed_audio()
+    refresh = {name for name in ART_REFRESH if (ROOT / 'public' / name).is_file()}
     files = {p.relative_to(DIST).as_posix(): p for p in DIST.rglob('*') if p.is_file()}
     names = set(files)
-    verify(names, lambda name: files[name].read_bytes(), audio)
-    print(f'Validated {len(ART)} PNG assets, index.html and the enabled audio manifest')
+    verify(names, lambda name: files[name].read_bytes(), audio, refresh)
+    print(f'Validated {len(ART)} PNG assets, {len(refresh)} installed WebP assets, index.html and the enabled audio manifest')
     if not args.zip:
         return
-    release = set(names) - {'assets/audio/README.md'}
+    release = names - {'assets/audio/README.md'} - ART_REFRESH_PLACEHOLDERS
     for name in release:
         compiled = bool(re.fullmatch(r'assets/[a-zA-Z0-9_.-]+\.(js|css)', name))
-        raster = name in {f'assets/art/{asset}.png' for asset in ART}
+        raster = name in {f'assets/art/{asset}.png' for asset in ART} or name in refresh
         require(name == 'index.html' or compiled or raster or name in audio or name in FONT_LICENSES or FONT_FILE.fullmatch(name), f'Unexpected ZIP entry: {name}')
         require(not files[name].is_symlink(), f'Symlink in release: {name}')
     path = ROOT / 'yandex-upload-ready.zip'
@@ -93,7 +105,7 @@ def main():
     with ZipFile(path) as archive:
         require(archive.testzip() is None, 'CRC check failed')
         require(set(archive.namelist()) == release, 'ZIP contents differ from the validated build')
-        verify(release, archive.read, audio)
+        verify(release, archive.read, audio, refresh)
     print(f'Verified {path.name} ({path.stat().st_size:,} bytes, {len(release)} files)')
 
 

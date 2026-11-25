@@ -1,8 +1,10 @@
+import { existsSync } from 'node:fs';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { expect, test, type Page } from '@playwright/test';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
+import { ART_REFRESH } from '../../src/ui/ArtAssets.ts';
 
 const saveKey = 'shelf-sort-studio';
 type Snapshot = { locale: string; cleared: number[]; volumes: { music: number; effects: number };
@@ -171,6 +173,73 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   await expect(canvas(page, 'Level')).toBeVisible();
   expect((await readSave(page))?.active?.level).toBe(2);
   expect(errors).toEqual([]);
+});
+
+test('production requests exactly one installed texture or PNG fallback per art ID', async ({ page }) => {
+  const responses = new Map<string, { status: number; mime: string }[]>();
+  page.on('response', response => {
+    const path = new URL(response.url()).pathname.replace(/^\/shelf_sort_studio\//, '');
+    const result = { status: response.status(), mime: response.headers()['content-type'] };
+    const history = responses.get(path) ?? [];
+    history.push(result);
+    responses.set(path, history);
+  });
+  await page.goto('./');
+  await expect(canvas(page, 'Play')).toBeVisible();
+  for (const { webp, fallback } of ART_REFRESH) {
+    const installed = existsSync(new URL(`../../dist/${webp}`, import.meta.url));
+    const expected = installed ? webp : fallback;
+    expect(responses.get(expected), expected).toEqual([{ status: 200, mime: installed ? 'image/webp' : 'image/png' }]);
+    expect(responses.has(installed ? fallback : webp)).toBe(false);
+  }
+});
+
+test('drag renders a single item and restores its source after cancel or invalid drop', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await page.goto('./');
+  await enter(page);
+
+  const move = LEVELS[0].solution[0];
+  const origin = slotPoint(move.from, 3);
+  const target = slotPoint(move.to, 3);
+  const heldAt = { x: 240, y: 235 };
+  const occupied = slotPoint({ shelf: 1, slot: 2 }, 3);
+  const sample = (at: { x: number; y: number }) => page.screenshot({
+    clip: { x: Math.round(at.x) - 12, y: Math.round(at.y) - 12, width: 24, height: 24 }, scale: 'css',
+  });
+  const sourceBefore = await sample(origin);
+  const targetBefore = await sample(target);
+  const ghostCenter = { x: heldAt.x, y: heldAt.y - 11 };
+  const ghostBefore = await sample(ghostCenter);
+  const lift = async () => {
+    await page.mouse.move(origin.x, origin.y);
+    await page.mouse.down();
+    await page.mouse.move(heldAt.x, heldAt.y);
+  };
+
+  await lift();
+  await expect.poll(async () => (await sample(ghostCenter)).equals(ghostBefore)).toBe(false);
+  const sourceDuringDrag = await sample(origin);
+  expect(sourceDuringDrag.equals(sourceBefore)).toBe(false);
+  await page.locator('canvas').dispatchEvent('pointercancel', { bubbles: true });
+  await page.mouse.up();
+  await expect.poll(async () => (await sample(origin)).equals(sourceBefore)).toBe(true);
+  expect((await sample(ghostCenter)).equals(ghostBefore)).toBe(true);
+  expect((await readSave(page))?.active?.moves).toEqual([]);
+
+  await lift();
+  await page.mouse.move(occupied.x, occupied.y);
+  await page.mouse.up();
+  await expect.poll(async () => (await sample(origin)).equals(sourceBefore)).toBe(true);
+  expect((await readSave(page))?.active?.moves).toEqual([]);
+
+  await lift();
+  await page.mouse.move(target.x, target.y);
+  await page.mouse.up();
+  await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([move]);
+  // The lifted slot must look exactly like the empty slot after a successful placement.
+  await expect.poll(async () => (await sample(origin)).equals(sourceDuringDrag)).toBe(true);
+  expect((await sample(target)).equals(targetBefore)).toBe(false);
 });
 
 test('stock sits behind the front slots, advances on reveal and restores with Undo and Reload', async ({ page }) => {

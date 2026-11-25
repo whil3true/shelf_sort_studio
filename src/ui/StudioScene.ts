@@ -1,10 +1,11 @@
 import Phaser from 'phaser';
-import { EMPTY_ROW, GOODS, goodAt, goodsLeft, sameSlot, type Board, type BoardEvent, type Move, type Slot } from '../game/Board.ts';
+import { EMPTY_ROW, GOODS, goodAt, goodsLeft, sameSlot, type Board, type BoardEvent, type Good, type Move, type Slot } from '../game/Board.ts';
 import { LEVELS, levelById } from '../game/Levels.ts';
 import type { Session } from '../game/Session.ts';
 import type { SearchResult } from '../game/Solver.ts';
 import type { AudioEffect } from '../audio/AudioAssetManifest.ts';
 import type { Storage, Locale } from '../platform/Storage.ts';
+import { ART_REFRESH, artPaths, type ArtId } from './ArtAssets';
 import { CHAPTERS, word, type TextKey } from './Locale';
 import { CONTROL_ICONS, StudioView, mutedInk, type Icon } from './StudioView';
 import { configureCamera } from './viewport';
@@ -24,19 +25,23 @@ type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint';
 interface Gesture {
   id: number; x: number; y: number; origin: Slot | null; dragging: boolean;
 }
+interface ReturningItem {
+  origin: Slot;
+  x: number;
+  y: number;
+  size: number;
+}
 interface BoardMotion {
   readonly events: ReadonlyMap<number, BoardEvent>;
   readonly render: ((progress: number) => void)[];
   progress: number;
 }
 
-const frontSize = 63;
 const rearSize = 54;
 const rearOffset = { x: 5, y: -25 };
+const dragSize = 73;
+const dragLift = 11;
 const sliderAccent = 0x9a533b;
-
-const art = [...GOODS, 'shelf', 'shop', 'victory', 'wordmark-ru', 'wordmark-en',
-  ...CONTROL_ICONS.map(name => `control-${name}`)];
 
 export class StudioScene extends Phaser.Scene {
   private view!: StudioView;
@@ -47,7 +52,9 @@ export class StudioScene extends Phaser.Scene {
   private session: Session | null = null;
   private selected: Slot | null = null;
   private gesture: Gesture | null = null;
+  private returning: ReturningItem | null = null;
   private ghost: Phaser.GameObjects.Image | null = null;
+  private readonly revealDepth = new Map<Good, number>();
   private hover: Slot | null = null;
   private hint: Move | null = null;
   private blocked = false;
@@ -69,7 +76,11 @@ export class StudioScene extends Phaser.Scene {
   }
 
   preload() {
-    for (const name of art) this.load.image(name, `./assets/art/${name}.png`);
+    const paths = artPaths();
+    for (const { id } of ART_REFRESH) this.load.image(id, `./${paths[id]}`);
+    for (const id of ['shop', 'victory', ...CONTROL_ICONS.map(name => `control-${name}`)]) {
+      this.load.image(id, `./assets/art/${id}.png`);
+    }
   }
 
   create() {
@@ -98,23 +109,36 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private prepareStockTextures() {
-    const textures = this.textures;
-    for (const good of GOODS) {
-      const key = `stock-${good}`;
-      if (textures.exists(key)) continue;
-      const { width, height } = textures.getFrame(good);
-      const texture = textures.createCanvas(key, width, height)!;
-      texture.drawFrame(good, undefined, 0, 0, false);
-      const ctx = texture.getContext();
-      const shadow = ctx.createLinearGradient(0, height * 0.19, 0, height * 0.91);
-      shadow.addColorStop(0, 'rgba(66, 38, 28, 0.57)');
-      shadow.addColorStop(1, 'rgba(76, 46, 33, 0.34)');
-      // Shade the pixels inside the sprite so its original alpha is preserved in Canvas and WebGL.
-      ctx.globalCompositeOperation = 'source-atop';
-      ctx.fillStyle = shadow;
-      ctx.fillRect(0, 0, width, height);
-      texture.refresh();
-    }
+    for (const good of GOODS) this.shadeStock(`stock-${good}`, good, 1);
+  }
+
+  private shadeStock(key: string, good: Good, depth: number) {
+    const { width, height } = this.textures.getFrame(good);
+    const canvas = (this.textures.exists(key) ? this.textures.get(key) :
+      this.textures.createCanvas(key, width, height)) as Phaser.Textures.CanvasTexture;
+    const ctx = canvas.getContext();
+    ctx.clearRect(0, 0, width, height);
+    canvas.drawFrame(good, undefined, 0, 0, false);
+
+    const shadow = ctx.createLinearGradient(0, height * 0.18, 0, height * 0.92);
+    shadow.addColorStop(0, 'rgba(61, 34, 26, 0.70)');
+    shadow.addColorStop(1, 'rgba(77, 48, 34, 0.50)');
+    // Shade the sprite's own pixels so opacity stays constant through the reveal.
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    ctx.globalAlpha = depth;
+    ctx.fillStyle = shadow;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+    canvas.refresh();
+  }
+
+  private refreshed(id: ArtId) {
+    return artPaths()[id].endsWith('.webp');
+  }
+
+  private frontSize(good: Good) {
+    return this.refreshed(good) ? 69 : 63;
   }
 
   setBlocked(blocked: boolean) {
@@ -122,6 +146,7 @@ export class StudioScene extends Phaser.Scene {
     if (!this.view) return;
     if (blocked) {
       this.gesture = null;
+      this.returning = null;
       this.selected = null;
       this.hover = null;
     }
@@ -139,6 +164,7 @@ export class StudioScene extends Phaser.Scene {
     this.screen = screen;
     this.selected = null;
     this.gesture = null;
+    this.returning = null;
     this.hover = null;
     this.hint = null;
     this.notice = null;
@@ -149,6 +175,9 @@ export class StudioScene extends Phaser.Scene {
   private overlay(modal: Modal | null) {
     this.modal = modal;
     this.selected = null;
+    this.gesture = null;
+    this.returning = null;
+    this.hover = null;
     this.hint = null;
     this.notice = null;
     this.draw();
@@ -189,7 +218,9 @@ export class StudioScene extends Phaser.Scene {
 
   private drawMenu() {
     const view = this.view;
-    view.image(`wordmark-${this.locale}`, 240, 134, 400, 142);
+    const logo = `wordmark-${this.locale}` as const;
+    const refreshed = this.refreshed(logo);
+    view.image(logo, 240, 134, refreshed ? 352 : 400, refreshed ? 144 : 142);
     view.label(this.tr('theme'), 240, 220, 18, { color: mutedInk, weight: 600 });
     view.image('shop', 240, 376, 416, 257);
     view.button(240, 553, 382, 67, this.tr('play'), () => {
@@ -253,6 +284,9 @@ export class StudioScene extends Phaser.Scene {
   private drawGame() {
     const view = this.view;
     const board = this.beforeAnimation ?? this.session!.board;
+    const dragged = this.gesture?.dragging ? this.gesture.origin : null;
+    const lifted = dragged ?? this.returning?.origin;
+    const moving = dragged ?? this.selected;
     this.header(`${this.tr('level')} ${String(this.level).padStart(2, '0')}`, () => this.go('levels'), true);
     view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 17, { color: mutedInk, weight: 600 });
     const intro: TextKey = this.level === 1 ? 'intro' : this.level <= 3 ? 'pair' : this.level <= 6 ? 'hidden' : 'goal';
@@ -278,42 +312,47 @@ export class StudioScene extends Phaser.Scene {
       shelf.front.forEach((good, indexInShelf) => {
         const slot = { shelf: index, slot: indexInShelf };
         const at = this.slotPosition(slot, board.length);
-        const moving = (this.gesture?.dragging && this.gesture.origin) || this.selected;
         const picked = !!moving && sameSlot(moving, slot);
         const valid = !!moving && good === null;
-        const targeted = this.hover && sameSlot(this.hover, slot);
+        const targeted = !picked && this.hover && sameSlot(this.hover, slot);
         const advised = this.hint && (sameSlot(this.hint.from, slot) || sameSlot(this.hint.to, slot));
-        if (picked || advised || targeted || valid) {
+        if ((picked && !dragged) || advised || targeted || valid) {
           const invalid = targeted && !valid;
           const fill = invalid ? 0xc57965 : picked || advised ? 0xffdda0 : 0xeeb99b;
           const stroke = invalid ? 0xfbd3c4 : picked || advised ? 0xfce4a8 : 0xffe0c2;
           view.box(at.x, at.y + 3, 59, 60, fill, picked || advised || targeted ? 0.79 : 0.59, 10, stroke);
         }
-        const front = revealing ? shelf.stock[0][indexInShelf] : good;
+        const front = revealing ? shelf.stock[0][indexInShelf] : lifted && sameSlot(lifted, slot) ? null : good;
         if (!front) {
           view.box(at.x, at.y + 23, 21, 3, 0x684936, 0.33, 2);
           return;
         }
-        const item = view.image(front, at.x, at.y, frontSize, frontSize)
-          .setAlpha(picked && this.gesture?.dragging ? 0.24 : 1);
+        const frontSize = this.frontSize(front);
+        const item = view.image(front, at.x, at.y, frontSize, frontSize);
         if (revealing) {
-          const shaded = view.image(`stock-${front}`, at.x, at.y, frontSize, frontSize);
+          const key = `reveal-${front}`;
           this.trackMotion(progress => {
             const depth = 1 - progress;
             const size = frontSize + (rearSize - frontSize) * depth;
             const x = at.x + rearOffset.x * depth;
             const y = at.y + rearOffset.y * depth;
-            item.setPosition(x, y).setDisplaySize(size, size).setVisible(progress > 0);
-            shaded.setPosition(x, y).setDisplaySize(size, size).setAlpha(depth);
+            if (this.revealDepth.get(front) !== depth) {
+              this.shadeStock(key, front, depth);
+              this.revealDepth.set(front, depth);
+            }
+            item.setTexture(key).setPosition(x, y).setDisplaySize(size, size);
           });
         } else if (event?.type === 'match') {
           this.trackMotion(progress => item.setY(at.y - 20 * progress).setAlpha(1 - progress));
         }
       });
     }
-    if (this.gesture?.dragging && this.gesture.origin) {
-      const good = goodAt(board, this.gesture.origin);
-      if (good) this.ghost = view.image(good, this.gesture.x, this.gesture.y - 11, 73, 73).setAlpha(0.93);
+    if (lifted) {
+      const good = goodAt(board, lifted);
+      const x = this.returning?.x ?? this.gesture!.x;
+      const y = this.returning?.y ?? this.gesture!.y - dragLift;
+      const size = this.returning?.size ?? dragSize;
+      if (good) this.ghost = view.image(good, x, y, size, size);
     }
 
     const deadlocked = !board.some(shelf => shelf.front.includes(null)) && goodsLeft(board) > 0;
@@ -372,6 +411,10 @@ export class StudioScene extends Phaser.Scene {
     if (!slot) return;
     const origin = goodAt(this.session!.board, slot) ? slot : null;
     this.gesture = { id: pointer.id, x, y, origin, dragging: false };
+    if (this.returning) {
+      this.returning = null;
+      this.draw();
+    }
     if (origin) this.host.audio('item_pickup');
   }
 
@@ -389,7 +432,7 @@ export class StudioScene extends Phaser.Scene {
       this.hover = hover;
       this.draw();
     }
-    this.ghost?.setPosition(x, y - 11);
+    this.ghost?.setPosition(x, y - dragLift);
   }
 
   private pointerUp(pointer: Phaser.Input.Pointer) {
@@ -416,22 +459,40 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private cancelGesture() {
-    if (!this.gesture) return;
+    if (!this.gesture && !this.returning) return;
     this.gesture = null;
+    this.returning = null;
     this.hover = null;
     this.selected = null;
     this.draw();
   }
 
   private returnItem(origin: Slot, x: number, y: number) {
-    this.draw();
     const board = this.session!.board;
     const good = goodAt(board, origin);
     if (!good) return;
-    const at = this.slotPosition(origin, board.length);
-    const item = this.view.image(good, x, y - 11, 68, 68);
-    this.tweens.add({ targets: item, x: at.x, y: at.y, duration: 145, ease: 'Cubic.Out',
-      onComplete: () => { if (item.active) item.destroy(); } });
+    const { x: endX, y: endY } = this.slotPosition(origin, board.length);
+    const startY = y - dragLift;
+    const endSize = this.frontSize(good);
+    const returning: ReturningItem = { origin, x, y: startY, size: dragSize };
+    this.returning = returning;
+    this.draw();
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 145, ease: 'Cubic.Out',
+      onUpdate: tween => {
+        if (this.returning !== returning) return;
+        const progress = tween.getValue() ?? 0;
+        returning.x = Phaser.Math.Linear(x, endX, progress);
+        returning.y = Phaser.Math.Linear(startY, endY, progress);
+        returning.size = Phaser.Math.Linear(dragSize, endSize, progress);
+        this.ghost?.setPosition(returning.x, returning.y).setDisplaySize(returning.size, returning.size);
+      },
+      onComplete: () => {
+        if (this.returning !== returning) return;
+        this.returning = null;
+        this.draw();
+      },
+    });
   }
 
   private commitMove(move: Move): boolean {
@@ -513,6 +574,7 @@ export class StudioScene extends Phaser.Scene {
   private undo() {
     if (!this.session?.undo()) return;
     this.store.saveRun(this.level, this.session);
+    this.returning = null;
     this.selected = null;
     this.hint = null;
     this.notice = null;
