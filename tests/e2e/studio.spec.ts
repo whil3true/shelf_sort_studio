@@ -137,11 +137,11 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
 
   await click(page, 240, 553);
   await expect(canvas(page, 'Choose a level')).toBeVisible();
-  await click(page, 379, 128);
+  await click(page, 379, 148);
   await click(page, 142, 350);
   await expect(canvas(page, 'Choose a level')).toBeVisible();
   expect(await readSave(page)).toBeNull();
-  await click(page, 101, 128);
+  await click(page, 101, 148);
   await click(page, 142, 350);
   await expect(canvas(page, 'Level')).toBeVisible();
 

@@ -164,13 +164,22 @@ export class StudioView {
     const icon = options.icon;
     const controlIcon = icon !== undefined && isControlIcon(icon);
     const labelY = options.caption ? y - 16 : y;
-    this.label(text, x + (text && icon && !options.caption ? (controlIcon ? 13 : 10) : 0), labelY,
+    const label = this.label(text, x + (text && icon && !options.caption ? (controlIcon ? 13 : 10) : 0), labelY,
       options.size ?? 22, { color, bold: true, wrap: w - (text && icon ? 36 : 12) });
     if (options.caption) this.label(options.caption, x, y + 23, 17, { color: mutedInk, wrap: w - 24 });
     if (controlIcon) {
-      this.image(`control-${icon}`, x - w / 2 + 21, y, 27, 27).setAlpha(live ? 1 : 0.74);
+      let iconX = x - w / 2 + 21;
+      if (icon === 'restart') {
+        // Center the visible arrow and the measured label with an even gap.
+        const visibleIconWidth = 20;
+        const gap = 10;
+        const textWidth = label.width - (label.padding.left ?? 0) - (label.padding.right ?? 0);
+        iconX = x - (textWidth + gap) / 2;
+        label.setX(x + (visibleIconWidth + gap) / 2);
+      }
+      this.image(`control-${icon}`, iconX, y, 27, 27).setAlpha(live ? 1 : 0.74);
     } else if (icon) {
-      this.icon(icon, x - (text ? w / 2 - 22 : 0), labelY,
+      this.icon(icon, x - (text ? w / 2 - 22 : 0), options.caption ? y - 8 : labelY,
         kind === 'sage' ? 0x303d2e : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
     }
     if (!live) return;
