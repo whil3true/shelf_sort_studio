@@ -1,8 +1,14 @@
-import { createCanvas } from '@napi-rs/canvas';
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { word } from '../src/ui/Locale.ts';
 
 const dir = new URL('../public/assets/art/', import.meta.url);
 mkdirSync(dir, { recursive: true });
+// Remove retired generated skins from an existing checkout before building the release.
+for (const name of ['button-green', 'button-paper', 'button-red', 'button-muted', 'paper']) {
+  rmSync(new URL(name + '.png', dir), { force: true });
+}
 const licenses = new URL('../public/assets/font-licenses/', import.meta.url);
 mkdirSync(licenses, { recursive: true });
 for (const [name, directory] of [['lora', '@fontsource/lora'], ['manrope', '@fontsource-variable/manrope']]) {
@@ -205,18 +211,13 @@ const sprites = Object.fromEntries(Object.entries(drawings).map(([name, draw]) =
   return [name, canvas];
 }));
 
-save('wallpaper', sheet(480, 800, () => {
-  round(0, 0, 480, 800, 0, grad(0, 800, '#fff4df', '#ecd4af'));
-  for (let x = 10; x < 480; x += 23) {
-    round(x, 0, 1, 800, 0, '#a3633212');
-    round(x + 2, 0, 3, 800, 0, '#fffaf347');
+// Transparent repeat tile. The viewport supplies the light-to-warm base underneath.
+save('wallpaper', sheet(144, 144, () => {
+  for (let x = 10; x < 144; x += 24) {
+    round(x, 0, 1, 144, 0, '#a363320e');
+    round(x + 2, 0, 3, 144, 0, '#fffaf332');
   }
-  const glow = ctx.createRadialGradient(238, 360, 105, 238, 360, 444);
-  glow.addColorStop(0, '#fff6e92b');
-  glow.addColorStop(1, '#ac6a3621');
-  round(0, 0, 480, 800, 0, glow);
-  line([[0, 785], [480, 785]], '#af805661', 2);
-  noise(480, 800, 46000, '#55301c0c');
+  noise(144, 144, 2400, '#55301c09');
 }));
 
 save('shelf', sheet(216, 136, () => {
@@ -232,34 +233,82 @@ save('shelf', sheet(216, 136, () => {
   noise(216, 136, 3000, '#67381912');
 }));
 
-for (const [name, a, b, edge] of [
-  ['button-green', '#52765f', '#315744', '#2f513f'],
-  ['button-paper', '#fff8e8', '#efddbd', '#ba9771'],
-  ['button-red', '#ad6652', '#8f4e3c', '#814836'],
-  ['button-muted', '#ead9ba', '#ddc6a4', '#c7ab80'],
-]) {
-  save(name, sheet(360, 72, () => {
-    round(3, 8, 354, 63, 19, '#64472d27');
-    round(2, 2, 356, 62, 18, grad(2, 62, a, b), edge);
-    round(6, 5, 348, 54, 15, '#ffffff07', '#fff9de34');
-  }));
+for (const [locale, alphabet] of [['ru', 'cyrillic'], ['en', 'latin']]) {
+  const font = `Studio Wordmark ${alphabet}`;
+  const file = new URL(`../node_modules/@fontsource/lora/files/lora-${alphabet}-700-normal.woff2`, import.meta.url);
+  if (!GlobalFonts.registerFromPath(fileURLToPath(file), font)) throw new Error(`Could not load ${font}`);
+  save(`wordmark-${locale}`, sheet(400, 142, () => {
+    for (const [lineKey, size, center, top, bottom] of [
+      ['titleTop', 64, 37, '#593d2e', '#493128'],
+      ['titleBottom', 55, 104, '#657253', '#505e44'],
+    ]) {
+      const text = word(locale, lineKey);
+      ctx.font = `700 ${size}px "${font}"`;
+      ctx.textBaseline = 'alphabetic';
+      const { actualBoundingBoxLeft, actualBoundingBoxRight, actualBoundingBoxAscent, actualBoundingBoxDescent } = ctx.measureText(text);
+      const x = 200 + (actualBoundingBoxLeft - actualBoundingBoxRight) / 2;
+      const y = center + (actualBoundingBoxAscent - actualBoundingBoxDescent) / 2;
+      ctx.fillStyle = grad(y - actualBoundingBoxAscent, actualBoundingBoxAscent + actualBoundingBoxDescent, top, bottom);
+      ctx.fillText(text, x, y);
+    }
+  }, 3));
 }
 
-save('paper', sheet(440, 440, () => {
-  round(3, 7, 434, 431, 25, '#432b253c');
-  round(1, 1, 438, 430, 24, grad(1, 430, '#fff9eb', '#f7e9cb'), '#b79570');
-  round(8, 8, 424, 416, 18, '#fff9eb0c', '#c4a77f55');
-  noise(440, 440, 14000, '#744e2b09');
-}));
+const controlInk = () => grad(5, 20, '#875f49', '#604232');
+save('control-undo', sheet(32, 32, () => {
+  path([[5, 12], [12, 5], [13, 4, 14, 5, 14, 6], [14, 10], [18, 10],
+    [25, 10, 28, 13, 28, 18], [28, 24, 23, 27, 17, 27],
+    [15, 27, 14, 26, 14, 24.5], [14, 23.3, 15, 22.5, 17, 22.5],
+    [21, 22.5, 23.5, 21, 23.5, 18.5], [23.5, 15.5, 21, 14.5, 18, 14.5], [14, 14.5],
+    [14, 18], [14, 19.5, 13, 20, 12, 19], [5, 13.5], [4.5, 13, 4.5, 12.5, 5, 12]], controlInk());
+  line([[15.5, 11.4], [21, 11, 24.5, 12, 26, 15]], '#ffebc83b');
+}, 3));
+
+save('control-restart', sheet(32, 32, () => {
+  const start = Math.PI / 8;
+  const end = 2 * Math.PI - Math.PI / 4;
+  const x = 15.5;
+  const y = 16.5;
+  const tipX = x + 9 * Math.cos(end);
+  const tipY = y + 9 * Math.sin(end);
+  ctx.beginPath();
+  ctx.arc(x, y, 11.3, start, end);
+  ctx.lineTo(tipX + 4.5, tipY - 4.5);
+  ctx.quadraticCurveTo(tipX + 5.5, tipY - 5.5, tipX + 5.7, tipY - 4);
+  ctx.lineTo(tipX + 5.7, tipY + 4.5);
+  ctx.quadraticCurveTo(tipX + 5.7, tipY + 5.7, tipX + 4.5, tipY + 5.7);
+  ctx.lineTo(tipX - 4, tipY + 5.7);
+  ctx.quadraticCurveTo(tipX - 5.5, tipY + 5.5, tipX - 4.5, tipY + 4.5);
+  ctx.arc(x, y, 6.7, end, start, true);
+  ctx.quadraticCurveTo(x + 8 * Math.cos(start) - 0.5, y + 9 * Math.sin(start) - 4.5,
+    x + 11.3 * Math.cos(start), y + 11.3 * Math.sin(start));
+  ctx.closePath();
+  ctx.fillStyle = controlInk();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x, y, 9.7, Math.PI * 1.03, Math.PI * 1.67);
+  ctx.strokeStyle = '#ffebc83b';
+  ctx.lineWidth = 0.9;
+  ctx.stroke();
+}, 3));
+
+save('control-hint', sheet(32, 32, () => {
+  path([[16, 3.5], [17, 3.5, 17.2, 4.6, 17.6, 5.8], [20, 11, 21, 12, 26.4, 14.2],
+    [29.2, 15.3, 29.2, 16.7, 26.4, 17.8], [21, 20, 20, 21, 17.6, 26.2],
+    [16.7, 29.2, 15.3, 29.2, 14.4, 26.2], [12, 21, 11, 20, 5.6, 17.8],
+    [2.8, 16.7, 2.8, 15.3, 5.6, 14.2], [11, 12, 12, 11, 14.4, 5.8],
+    [14.8, 4.6, 15, 3.5, 16, 3.5]], grad(4, 24, '#b58754', '#865436'));
+  line([[11, 14], [13.5, 12.8, 14.7, 10.9, 15.9, 8.4]], '#ffebc878', 1.25);
+}, 3));
 
 save('shop', sheet(416, 257, () => {
   round(2, 6, 412, 248, 25, '#65422b2e');
-  round(1, 0, 414, 251, 24, grad(0, 249, '#4a6954', '#263d34'), '#29463b');
+  round(1, 0, 414, 251, 24, grad(0, 251, '#d6d9ba', '#acb48c'));
   ctx.save();
   ctx.beginPath(); ctx.roundRect(2, 2, 412, 248, 23); ctx.clip();
-  for (let x = 12; x < 415; x += 20) line([[x, 0], [x, 244]], '#e8d4a71a');
-  path([[0, 215], [416, 215], [416, 252], [0, 252]], grad(215, 37, '#273e34', '#314538'));
-  oval(208, 233, 144, 13, '#1a2d2770');
+  for (let x = 12; x < 415; x += 20) line([[x, 0], [x, 244]], '#fffae837');
+  path([[0, 215], [416, 215], [416, 252], [0, 252]], grad(215, 37, '#aab28b', '#bec3a0'));
+  oval(208, 233, 144, 13, '#69654847');
   round(78, 37, 260, 199, 29, grad(37, 199, '#c1976a', '#96664e'), '#704b3d', 2);
   round(87, 46, 242, 185, 21, grad(46, 179, '#674e38', '#967354'), '#f0c89777', 1.5);
   round(98, 51, 220, 177, 17, grad(51, 177, '#6c5440', '#b2855e'));

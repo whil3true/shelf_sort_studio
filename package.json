@@ -12,7 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/unit/*.test.ts",
-    "assets": "node scripts/create-art.mjs",
+    "assets": "node --experimental-strip-types scripts/create-art.mjs",
     "predev": "npm run assets",
     "prebuild": "npm run assets",
     "validate": "python3 scripts/check-release.py",

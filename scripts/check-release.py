@@ -10,11 +10,12 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / 'dist'
 MANIFEST = ROOT / 'src/audio/AudioAssetManifest.ts'
 GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint cookie'.split()
-ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (960, 1600), 'shelf': (432, 272),
-       'shop': (832, 514), 'victory': (424, 412), 'paper': (880, 880)}
+ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (432, 272),
+       'shop': (832, 514), 'victory': (424, 412),
+       'wordmark-ru': (1200, 426), 'wordmark-en': (1200, 426)}
 FONT_LICENSES = {'assets/font-licenses/lora-OFL.txt', 'assets/font-licenses/manrope-OFL.txt'}
 FONT_FILE = re.compile(r'assets/(lora|manrope)-(latin|cyrillic)-[a-zA-Z0-9_.-]+\.woff2')
-ART.update({f'button-{name}': (720, 144) for name in ('green', 'paper', 'red', 'muted')})
+ART.update({f'control-{name}': (96, 96) for name in ('undo', 'restart', 'hint')})
 
 
 class EntryPage(HTMLParser):
