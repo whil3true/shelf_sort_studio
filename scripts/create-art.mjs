@@ -222,35 +222,60 @@ save('wallpaper', sheet(144, 144, () => {
 
 save('shelf', sheet(216, 136, () => {
   round(2, 8, 212, 126, 14, '#71412328');
-  round(1, 3, 214, 127, 14, grad(3, 127, '#e3b485', '#9a6045'), '#9b6445');
-  round(7, 10, 202, 107, 10, grad(10, 106, '#996547', '#d0a477'), '#80533c');
-  round(12, 13, 192, 100, 8, grad(13, 100, '#ba8b62', '#e6bc8e'));
-  round(7, 97, 202, 22, 5, grad(97, 22, '#e9be90', '#bd855d'));
-  round(4, 113, 208, 15, 5, grad(113, 15, '#c89266', '#a76d50'));
-  line([[14, 114], [200, 114]], '#f8d5a789');
+  round(1, 3, 214, 127, 14, grad(3, 127, '#e8bc91', '#a4674a'), '#986345');
+  round(7, 10, 202, 107, 10, grad(10, 107, '#926048', '#bd8c65'), '#845539');
+  round(12, 14, 192, 96, 8, grad(14, 96, '#ab7757', '#c79a72'));
+  // A single surface recedes into the case, under both rows of goods.
+  path([[21, 66], [195, 66], [207, 105], [9, 105]], grad(66, 39, '#ba8a67', '#e8bb8c'));
+  line([[19, 104], [196, 104]], '#f6d5ad9e', 1.2);
+  round(4, 106, 208, 22, 5, grad(106, 22, '#d8a477', '#ad7154'));
+  line([[14, 108], [201, 108]], '#fae0b67f');
   line([[16, 121], [200, 121]], '#8b52375b');
-  for (const x of [18, 198]) { oval(x, 122, 2, 2, '#744b3c73'); oval(x - 0.4, 121.5, 0.6, 0.6, '#efd0a9'); }
+  for (const x of [18, 198]) { oval(x, 119, 2, 2, '#744b3c73'); oval(x - 0.4, 118.5, 0.6, 0.6, '#efd0a9'); }
   noise(216, 136, 3000, '#67381912');
 }));
+
+function wordmarkLettering(text, font, size, center, top, bottom) {
+  const scale = 3;
+  const glyphs = createCanvas(400 * scale, 142 * scale);
+  const lettering = glyphs.getContext('2d');
+  lettering.scale(scale, scale);
+  lettering.font = `700 ${size}px "${font}"`;
+  const bounds = lettering.measureText(text);
+  const { actualBoundingBoxLeft: left, actualBoundingBoxRight: right,
+    actualBoundingBoxAscent: ascent, actualBoundingBoxDescent: descent } = bounds;
+  const x = 200 + (left - right) / 2;
+  const y = center + (ascent - descent) / 2;
+
+  // Rasterize opaque glyphs once, then color their antialiased silhouette.
+  lettering.fillText(text, x, y);
+  lettering.globalCompositeOperation = 'source-in';
+  const color = lettering.createLinearGradient(0, y - ascent, 0, y + descent);
+  color.addColorStop(0, top);
+  color.addColorStop(1, bottom);
+  lettering.fillStyle = color;
+  lettering.fillRect(0, 0, 400, 142);
+
+  ctx.drawImage(glyphs, 0, 0, 400, 142);
+  return (left + right) / 2;
+}
 
 for (const [locale, alphabet] of [['ru', 'cyrillic'], ['en', 'latin']]) {
   const font = `Studio Wordmark ${alphabet}`;
   const file = new URL(`../node_modules/@fontsource/lora/files/lora-${alphabet}-700-normal.woff2`, import.meta.url);
   if (!GlobalFonts.registerFromPath(fileURLToPath(file), font)) throw new Error(`Could not load ${font}`);
   save(`wordmark-${locale}`, sheet(400, 142, () => {
-    for (const [lineKey, size, center, top, bottom] of [
-      ['titleTop', 64, 37, '#593d2e', '#493128'],
-      ['titleBottom', 55, 104, '#657253', '#505e44'],
-    ]) {
-      const text = word(locale, lineKey);
-      ctx.font = `700 ${size}px "${font}"`;
-      ctx.textBaseline = 'alphabetic';
-      const { actualBoundingBoxLeft, actualBoundingBoxRight, actualBoundingBoxAscent, actualBoundingBoxDescent } = ctx.measureText(text);
-      const x = 200 + (actualBoundingBoxLeft - actualBoundingBoxRight) / 2;
-      const y = center + (actualBoundingBoxAscent - actualBoundingBoxDescent) / 2;
-      ctx.fillStyle = grad(y - actualBoundingBoxAscent, actualBoundingBoxAscent + actualBoundingBoxDescent, top, bottom);
-      ctx.fillText(text, x, y);
+    wordmarkLettering(word(locale, 'titleTop'), font, 63, 36, '#674331', '#4d2e25');
+    const halfWidth = wordmarkLettering(word(locale, 'titleBottom'), font, locale === 'ru' ? 49 : 53,
+      100, '#985a46', '#794332');
+    for (const side of [-1, 1]) {
+      const x = 200 + side * (halfWidth + 16);
+      line([[x, 110], [x + side * 10, 107, x + side * 19, 102, x + side * 23, 95]], '#8c946a', 1.6);
+      leaf(x + side * 6, 108, '#789066', side);
+      oval(x + side * 28, 98, 2.2, 2.2, '#bd8754');
+      line([[200 + side * 11, 132], [200 + side * 44, 133], [200 + side * 58, 130]], '#bf9464', 1.5);
     }
+    shine(200, 132, 4, '#b2824c');
   }, 3));
 }
 
@@ -303,11 +328,11 @@ save('control-hint', sheet(32, 32, () => {
 
 save('shop', sheet(416, 257, () => {
   round(2, 6, 412, 248, 25, '#65422b2e');
-  round(1, 0, 414, 251, 24, grad(0, 251, '#d6d9ba', '#acb48c'));
+  round(1, 0, 414, 251, 24, grad(0, 251, '#efdbc2', '#d9b69a'));
   ctx.save();
   ctx.beginPath(); ctx.roundRect(2, 2, 412, 248, 23); ctx.clip();
   for (let x = 12; x < 415; x += 20) line([[x, 0], [x, 244]], '#fffae837');
-  path([[0, 215], [416, 215], [416, 252], [0, 252]], grad(215, 37, '#aab28b', '#bec3a0'));
+  path([[0, 215], [416, 215], [416, 252], [0, 252]], grad(215, 37, '#c5b391', '#dfc19d'));
   oval(208, 233, 144, 13, '#69654847');
   round(78, 37, 260, 199, 29, grad(37, 199, '#c1976a', '#96664e'), '#704b3d', 2);
   round(87, 46, 242, 185, 21, grad(46, 179, '#674e38', '#967354'), '#f0c89777', 1.5);

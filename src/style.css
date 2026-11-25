@@ -7,7 +7,7 @@ body {
   --safe-left: env(safe-area-inset-left, 0px);
   position: fixed;
   inset: 0;
-  background: #f4e6d0;
+  background: #f4e2cd;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -18,7 +18,7 @@ body {
   inset: 0;
   overflow: hidden;
   touch-action: none;
-  background-image: url('/assets/art/wallpaper.png'), linear-gradient(#fff3e1, #eddbc1);
+  background-image: url('/assets/art/wallpaper.png'), linear-gradient(#fff2df, #efd5b9);
   background-size: 144px 144px, 100% 100%;
 }
 canvas { display: block; touch-action: none; -webkit-tap-highlight-color: transparent; }

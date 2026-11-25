@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GOODS, goodAt, goodsLeft, sameSlot, type Board, type Good, type Move, type Slot } from '../game/Board.ts';
+import { EMPTY_ROW, GOODS, goodAt, goodsLeft, sameSlot, type Board, type BoardEvent, type Move, type Slot } from '../game/Board.ts';
 import { LEVELS, levelById } from '../game/Levels.ts';
 import type { Session } from '../game/Session.ts';
 import type { SearchResult } from '../game/Solver.ts';
@@ -24,6 +24,18 @@ type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint';
 interface Gesture {
   id: number; x: number; y: number; origin: Slot | null; dragging: boolean;
 }
+interface BoardMotion {
+  readonly events: ReadonlyMap<number, BoardEvent>;
+  readonly render: ((progress: number) => void)[];
+  progress: number;
+}
+
+const frontSize = 63;
+const rearSize = 56;
+const rearOffset = { x: 5, y: -25 };
+const rearLight = 195;
+const rearAlpha = 0.78;
+
 const art = [...GOODS, 'shelf', 'shop', 'victory', 'wordmark-ru', 'wordmark-en',
   ...CONTROL_ICONS.map(name => `control-${name}`)];
 
@@ -42,6 +54,7 @@ export class StudioScene extends Phaser.Scene {
   private blocked = false;
   private animation = false;
   private beforeAnimation: Board | null = null;
+  private motion: BoardMotion | null = null;
   private notice: TextKey | null = null;
   private pendingLevel = 0;
   private busy = false;
@@ -128,6 +141,7 @@ export class StudioScene extends Phaser.Scene {
 
   private draw() {
     this.view.clear();
+    if (this.motion) this.motion.render.length = 0;
     this.ghost = null;
     // Phaser registers the new input zones during PRE_UPDATE, before exposing the screen.
     this.events.off(Phaser.Scenes.Events.PRE_UPDATE, this.syncScreenLabel);
@@ -156,12 +170,12 @@ export class StudioScene extends Phaser.Scene {
   private drawMenu() {
     const view = this.view;
     view.image(`wordmark-${this.locale}`, 240, 134, 400, 142);
-    view.label(this.tr('theme'), 240, 220, 19, { color: mutedInk });
+    view.label(this.tr('theme'), 240, 220, 18, { color: mutedInk, weight: 600 });
     view.image('shop', 240, 376, 416, 257);
     view.button(240, 553, 382, 67, this.tr('play'), () => {
       this.chapter = Math.floor(((this.store.currentLevel ?? this.store.nextLevel ?? 18) - 1) / 6);
       this.go('levels');
-    }, { kind: 'sage', size: 27 });
+    }, { kind: 'honey', size: 27 });
     const active = this.store.currentLevel;
     view.button(240, 621, 382, 61, active === null ? this.tr('resume') : `${this.tr('resume')} · ${this.tr('level')} ${active}`,
       () => { if (active !== null) this.open(active); }, { live: active !== null });
@@ -171,7 +185,7 @@ export class StudioScene extends Phaser.Scene {
 
   private header(title: string, back: () => void, settings = false) {
     this.view.button(47, 54, 61, 56, '', back, { icon: 'back', live: !this.animation });
-    this.view.label(title, 240, 52, 31, { serif: true, bold: true, wrap: 315 });
+    this.view.label(title, 240, 52, 29, { serif: true, bold: true, wrap: 315 });
     if (settings) this.view.button(433, 54, 61, 56, '', () => this.overlay('settings'), { icon: 'settings', live: !this.animation });
   }
 
@@ -181,12 +195,12 @@ export class StudioScene extends Phaser.Scene {
     view.surface('panel', 240, 410, 430, 616);
     for (let index = 0; index < CHAPTERS.length; index++) {
       view.button(101 + index * 139, 148, 132, 54, `${this.tr('chapter')} ${index + 1}`,
-        () => { this.chapter = index; this.draw(); }, { kind: this.chapter === index ? 'sage' : 'paper', size: 18 });
+        () => { this.chapter = index; this.draw(); }, { kind: this.chapter === index ? 'honey' : 'paper', size: 18 });
     }
     const levels = LEVELS.filter(item => item.chapter === this.chapter);
     const cleared = levels.filter(item => this.store.isCleared(item.id)).length;
-    view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 30, { serif: true, bold: true });
-    view.label(`${cleared}/6 ${this.tr('completed')}`, 240, 262, 19, { color: mutedInk });
+    view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 32, { serif: true });
+    view.label(`${cleared}/6 ${this.tr('completed')}`, 240, 262, 17, { color: mutedInk, weight: 600 });
     for (const [index, item] of levels.entries()) {
       const x = 142 + index % 2 * 196;
       const y = 356 + Math.floor(index / 2) * 136;
@@ -194,7 +208,7 @@ export class StudioScene extends Phaser.Scene {
       const done = this.store.isCleared(item.id);
       const description = done ? this.tr('cleared') : live ? this.tr('level') : this.tr('locked');
       view.button(x, y, 168, 108, String(item.id).padStart(2, '0'), () => this.tryOpen(item.id), {
-        kind: live && !done ? 'sage' : 'paper', size: 33, live, icon: done ? 'check' : live ? undefined : 'lock',
+        kind: done ? 'sage' : 'paper', size: 36, live, icon: done ? 'check' : live ? undefined : 'lock',
         caption: description,
       });
     }
@@ -220,16 +234,27 @@ export class StudioScene extends Phaser.Scene {
     const view = this.view;
     const board = this.beforeAnimation ?? this.session!.board;
     this.header(`${this.tr('level')} ${String(this.level).padStart(2, '0')}`, () => this.go('levels'), true);
-    view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 18, { color: mutedInk });
+    view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 17, { color: mutedInk, weight: 600 });
     const intro: TextKey = this.level === 1 ? 'intro' : this.level <= 3 ? 'pair' : this.level <= 6 ? 'hidden' : 'goal';
     view.surface('notice', 240, 147, 427, 58);
     view.label(this.tr(intro), 240, 147, 18, { wrap: 397 });
     for (const [index, shelf] of board.entries()) {
       const { x, y } = this.shelfPosition(index, board.length);
       view.image('shelf', x, y, 216, 136);
-      if (shelf.stock.length) {
-        view.box(x + 58, y - 43, 73, 23, 0x63432f, 0.76, 6);
-        view.label(`${this.tr('stock')} ${shelf.stock.length}`, x + 58, y - 43, 13, { color: '#fff2cf', bold: true });
+      const event = this.motion?.events.get(index);
+      const revealing = event?.type === 'reveal';
+      const rear = shelf.stock[revealing ? 1 : 0];
+      rear?.forEach((good, slot) => {
+        if (!good) return;
+        const at = this.slotPosition({ shelf: index, slot }, board.length);
+        const item = view.image(good, at.x + rearOffset.x, at.y + rearOffset.y, rearSize, rearSize)
+          .setTint(rearLight * 0x010101).setAlpha(rearAlpha);
+        if (revealing) this.trackMotion(progress => item.setAlpha(rearAlpha * progress));
+      });
+
+      if (event?.type === 'match') {
+        const glow = view.box(x, y + 22, 184, 31, 0xf5d284, 0.44, 11);
+        this.trackMotion(progress => glow.setAlpha(1 - progress));
       }
       shelf.front.forEach((good, indexInShelf) => {
         const slot = { shelf: index, slot: indexInShelf };
@@ -239,11 +264,32 @@ export class StudioScene extends Phaser.Scene {
         const valid = !!moving && good === null;
         const targeted = this.hover && sameSlot(this.hover, slot);
         const advised = this.hint && (sameSlot(this.hint.from, slot) || sameSlot(this.hint.to, slot));
-        const fill = targeted && !valid ? 0xc87561 : picked || advised ? 0xffe2a0 : valid ? 0xc5d3a1 : 0x7b5136;
-        const stroke = targeted && !valid ? 0xfbd3c4 : picked || advised ? 0xfce4a8 : valid ? 0xf4f7cb : 0x7b5033;
-        view.box(at.x, at.y + 3, 59, 60, fill, picked || advised || targeted ? 0.79 : valid ? 0.59 : 0.16, 10, stroke);
-        if (good) view.image(good, at.x, at.y, 63, 63).setAlpha(picked && this.gesture?.dragging ? 0.24 : 1);
-        else view.box(at.x, at.y + 23, 21, 3, 0x684936, 0.33, 2);
+        if (picked || advised || targeted || valid) {
+          const invalid = targeted && !valid;
+          const fill = invalid ? 0xc57965 : picked || advised ? 0xffdda0 : 0xcad4a9;
+          const stroke = invalid ? 0xfbd3c4 : picked || advised ? 0xfce4a8 : 0xf4f7cb;
+          view.box(at.x, at.y + 3, 59, 60, fill, picked || advised || targeted ? 0.79 : 0.59, 10, stroke);
+        }
+        const front = revealing ? shelf.stock[0][indexInShelf] : good;
+        if (!front) {
+          view.box(at.x, at.y + 23, 21, 3, 0x684936, 0.33, 2);
+          return;
+        }
+        const item = view.image(front, at.x, at.y, frontSize, frontSize)
+          .setAlpha(picked && this.gesture?.dragging ? 0.24 : 1);
+        if (revealing) {
+          this.trackMotion(progress => {
+            const depth = 1 - progress;
+            const size = frontSize + (rearSize - frontSize) * depth;
+            const light = Math.round(255 - (255 - rearLight) * depth);
+            item.setPosition(at.x + rearOffset.x * depth, at.y + rearOffset.y * depth)
+              .setDisplaySize(size, size)
+              .setTint(light * 0x010101)
+              .setAlpha(1 - (1 - rearAlpha) * depth);
+          });
+        } else if (event?.type === 'match') {
+          this.trackMotion(progress => item.setY(at.y - 20 * progress).setAlpha(1 - progress));
+        }
       });
     }
     if (this.gesture?.dragging && this.gesture.origin) {
@@ -260,6 +306,12 @@ export class StudioScene extends Phaser.Scene {
     ];
     controls.forEach(([text, icon, action, live], i) => view.button(91 + i * 149, 739, 139, 59,
       this.tr(text), () => { if (!this.animation) action(); }, { icon, size: 17, live: live && !this.animation }));
+  }
+
+  private trackMotion(render: (progress: number) => void) {
+    const motion = this.motion!;
+    motion.render.push(render);
+    render(motion.progress);
   }
 
   private shelfPosition(index: number, count: number) {
@@ -380,46 +432,63 @@ export class StudioScene extends Phaser.Scene {
     }
 
     this.animation = true;
-    const landed = goodAt(previous, move.from) as Good;
-    const matched = new Set(result.events.filter(event => event.type === 'match').map(event => event.shelf));
-    const frontRows = previous.map((shelf, index) => {
-      const front = [...shelf.front];
+    const landed = goodAt(previous, move.from)!;
+    this.beforeAnimation = previous.map((shelf, index) => {
+      if (move.from.shelf !== index && move.to.shelf !== index) return shelf;
+      const front: [...typeof shelf.front] = [...shelf.front];
       if (move.from.shelf === index) front[move.from.slot] = null;
       if (move.to.shelf === index) front[move.to.slot] = landed;
-      if (matched.has(index)) front.fill(null);
-      return { ...shelf, front: front as [Good | null, Good | null, Good | null] };
+      return { ...shelf, front };
     });
-    this.beforeAnimation = frontRows;
-    this.draw();
-    for (const event of result.events) {
-      if (event.type !== 'match') continue;
-      this.host.audio('match_three');
-      const at = this.slotPosition({ shelf: event.shelf, slot: 1 }, previous.length);
-      const flash = this.view.box(at.x, at.y, 193, 73, 0xf5d284, 0.68, 12, 0xffefbc);
-      this.tweens.add({ targets: flash, alpha: 0, scaleX: 1.04, scaleY: 0.9, duration: 210, ease: 'Cubic.Out' });
-      for (let i = 0; i < 3; i++) {
-        const item = this.view.image(event.good, at.x + (i - 1) * 63, at.y, 66, 66);
-        this.tweens.add({ targets: item, y: at.y - 23, alpha: 0.05, duration: 220, ease: 'Cubic.In' });
-      }
-    }
-    this.time.delayedCall(225, () => {
-      this.beforeAnimation = null;
-      if (result.events.some(event => event.type === 'reveal')) this.host.audio('shelf_reveal');
-      this.draw();
-      const reveals = [...new Set(result.events.filter(event => event.type === 'reveal').map(event => event.shelf))];
-      for (const shelf of reveals) {
-        const at = this.slotPosition({ shelf, slot: 1 }, previous.length);
-        const glow = this.view.box(at.x, at.y, 196, 70, 0xffdf9f, 0.42, 11);
-        this.tweens.add({ targets: glow, y: at.y + 8, alpha: 0, duration: 145,
-          onComplete: () => { if (glow.active) glow.destroy(); } });
-      }
-      this.time.delayedCall(reveals.length ? 148 : 0, () => {
-        this.animation = false;
-        if (session.won) void this.completeLevel();
-        else this.draw();
-      });
-    });
+    this.animateBoard(result.events);
     return true;
+  }
+
+  private animateBoard(remaining: readonly BoardEvent[]) {
+    if (!remaining.length) {
+      this.beforeAnimation = null;
+      this.motion = null;
+      this.animation = false;
+      if (this.session!.won) void this.completeLevel();
+      else this.draw();
+      return;
+    }
+
+    // Each shelf can reveal and match repeatedly during a single move.
+    const next = new Map<number, BoardEvent>();
+    for (const event of remaining) {
+      if (!next.has(event.shelf)) next.set(event.shelf, event);
+    }
+    const matches = [...next.values()].filter(event => event.type === 'match');
+    const events = matches.length ? new Map(matches.map(event => [event.shelf, event])) : next;
+    const motion: BoardMotion = { events, progress: 0, render: [] };
+    this.motion = motion;
+    this.draw();
+
+    if (matches.length) {
+      for (const _event of matches) this.host.audio('match_three');
+    } else {
+      this.host.audio('shelf_reveal');
+    }
+
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: matches.length ? 155 : 210,
+      ease: matches.length ? 'Cubic.In' : 'Sine.InOut',
+      onUpdate: tween => {
+        motion.progress = tween.getValue() ?? 0;
+        motion.render.forEach(render => render(motion.progress));
+      },
+      onComplete: () => {
+        this.beforeAnimation = this.beforeAnimation!.map((shelf, index) => {
+          const event = events.get(index);
+          if (!event) return shelf;
+          if (event.type === 'match') return { ...shelf, front: EMPTY_ROW };
+          const [front, ...stock] = shelf.stock;
+          return { front, stock };
+        });
+        this.animateBoard(remaining.filter(event => events.get(event.shelf) !== event));
+      },
+    });
   }
 
   private undo() {
@@ -443,7 +512,7 @@ export class StudioScene extends Phaser.Scene {
     this.view.image('victory', 240, 277, 228, 222);
     this.view.label(this.tr(next ? 'won' : 'wonAll'), 240, 421, 39, { serif: true, bold: true, wrap: 388 });
     this.view.label(this.tr(next ? 'wonText' : 'wonAllText'), 240, 478, 21, { color: mutedInk });
-    if (next) this.view.button(240, 564, 359, 64, this.tr('next'), () => this.open(next), { kind: 'sage', icon: 'arrow' });
+    if (next) this.view.button(240, 564, 359, 64, this.tr('next'), () => this.open(next), { kind: 'honey', icon: 'arrow' });
     this.view.button(240, 634, 359, 60, this.tr('levelSelect'), () => this.go('levels'), { icon: 'back' });
   }
 
@@ -459,7 +528,7 @@ export class StudioScene extends Phaser.Scene {
     if (modal === 'settings') {
       view.surface('panel', 240, 400, 430, 462);
       view.label(this.tr('settings'), 240, 219, 35, { bold: true, serif: true });
-      view.label(this.tr('language'), 69, 276, 20, { align: 'left', bold: true });
+      view.label(this.tr('language'), 69, 276, 18, { align: 'left', weight: 600 });
       for (const [index, locale] of (['ru', 'en'] as const).entries()) {
         view.button(146 + index * 188, 325, 169, 54, locale === 'ru' ? 'Русский' : 'English', () => {
           this.locale = locale;
@@ -505,12 +574,12 @@ export class StudioScene extends Phaser.Scene {
     const view = this.view;
     const left = 76;
     const width = 325;
-    view.label(this.tr(channel), left, y - 20, 20, { align: 'left', bold: true });
+    view.label(this.tr(channel), left, y - 20, 18, { align: 'left', weight: 600 });
     const value = this.store.volumes[channel];
     const number = view.label(`${Math.round(value * 100)}%`, 373, y - 20, 17, { color: mutedInk });
-    view.box(left + width / 2, y + 12, width, 8, 0xdac5a6, 1, 4);
-    const fill = view.box(left, y + 12, width, 8, 0x6f7d5c, 1, 4);
-    const thumb = view.box(left + value * width, y + 12, 22, 22, 0x6f7d5c, 1, 11, 0xfff2db);
+    view.box(left + width / 2, y + 12, width, 8, 0xe1c6a7, 1, 4);
+    const fill = view.box(left, y + 12, width, 8, 0x76845e, 1, 4);
+    const thumb = view.box(left + value * width, y + 12, 22, 22, 0x76845e, 1, 11, 0xfff2db);
     const render = (updated: number) => {
       const pixels = updated * width;
       fill.setScale(Math.max(0.001, updated), 1).setX(left + pixels / 2);
