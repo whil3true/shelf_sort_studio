@@ -2,7 +2,6 @@ import Phaser from 'phaser';
 
 export const ink = '#53372c';
 export const mutedInk = '#735748';
-const olive = '#414e36';
 const serif = '"Studio Serif", Georgia, serif';
 const sans = '"Studio Sans", Arial, sans-serif';
 
@@ -12,7 +11,7 @@ export type Icon = 'back' | 'settings' | 'help' | 'lock' | 'check' | 'arrow' | C
 
 const surfaces = {
   honey: { top: '#f6dba4', bottom: '#e9bb7f', radius: 12 },
-  sage: { top: '#e2e6cc', bottom: '#cbd5b4', radius: 12 },
+  completed: { top: '#f5d6be', bottom: '#e6b493', radius: 12 },
   paper: { top: '#fff6e7', bottom: '#f4e2c9', radius: 12 },
   clay: { top: '#f2c8b4', bottom: '#e3ad97', radius: 12 },
   muted: { top: '#eee0d0', bottom: '#e7d5c0', radius: 12 },
@@ -26,7 +25,7 @@ function isControlIcon(icon: Icon): icon is ControlIcon {
   return icon === 'undo' || icon === 'restart' || icon === 'hint';
 }
 export interface ButtonOptions {
-  kind?: 'honey' | 'sage' | 'paper' | 'clay';
+  kind?: 'honey' | 'completed' | 'paper' | 'clay';
   live?: boolean;
   icon?: Icon;
   size?: number;
@@ -163,7 +162,7 @@ export class StudioView {
     const live = options.live !== false;
     const kind = live ? options.kind ?? 'paper' : 'muted';
     const background = this.surface(kind, x, y, w, h - 6);
-    const color = kind === 'sage' ? olive : live ? ink : mutedInk;
+    const color = live ? ink : mutedInk;
     const icon = options.icon;
     const controlIcon = icon !== undefined && isControlIcon(icon);
     const labelY = options.caption ? y - 16 : y;
@@ -171,7 +170,7 @@ export class StudioView {
       options.size ?? 22, { color, serif: !!options.caption, weight: kind === 'honey' || options.caption ? 700 : 600,
         wrap: w - (text && icon ? 36 : 12) });
     if (options.caption) this.label(options.caption.toUpperCase(), x, y + 21, 14, {
-      color: kind === 'sage' ? olive : mutedInk, weight: 600, tracking: 0.8, wrap: w - 24,
+      color: kind === 'completed' ? ink : mutedInk, weight: 600, tracking: 0.8, wrap: w - 24,
     });
     if (controlIcon) {
       let iconX = x - w / 2 + 21;
@@ -186,7 +185,7 @@ export class StudioView {
       this.image(`control-${icon}`, iconX, y, 27, 27).setAlpha(live ? 1 : 0.74);
     } else if (icon) {
       this.icon(icon, x - (text ? w / 2 - 22 : 0), options.caption ? y - 8 : labelY,
-        kind === 'sage' ? 0x414e36 : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
+        live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
     }
     if (!live) return;
     const zone = this.hit(x, y, w - 3, h - 6);

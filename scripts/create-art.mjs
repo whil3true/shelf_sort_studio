@@ -235,47 +235,39 @@ save('shelf', sheet(216, 136, () => {
   noise(216, 136, 3000, '#67381912');
 }));
 
-function wordmarkLettering(text, font, size, center, top, bottom) {
-  const scale = 3;
-  const glyphs = createCanvas(400 * scale, 142 * scale);
-  const lettering = glyphs.getContext('2d');
-  lettering.scale(scale, scale);
-  lettering.font = `700 ${size}px "${font}"`;
-  const bounds = lettering.measureText(text);
+const wordmarkWidth = 400;
+
+function wordmarkLettering(text, font, size, maxWidth, center, top, bottom) {
+  ctx.font = `700 ${size}px "${font}"`;
+  let bounds = ctx.measureText(text);
+  const width = bounds.actualBoundingBoxLeft + bounds.actualBoundingBoxRight;
+  if (width > maxWidth) {
+    ctx.font = `700 ${size * maxWidth / width}px "${font}"`;
+    bounds = ctx.measureText(text);
+  }
   const { actualBoundingBoxLeft: left, actualBoundingBoxRight: right,
     actualBoundingBoxAscent: ascent, actualBoundingBoxDescent: descent } = bounds;
-  const x = 200 + (left - right) / 2;
+  const x = (wordmarkWidth + left - right) / 2;
   const y = center + (ascent - descent) / 2;
 
-  // Rasterize opaque glyphs once, then color their antialiased silhouette.
-  lettering.fillText(text, x, y);
-  lettering.globalCompositeOperation = 'source-in';
-  const color = lettering.createLinearGradient(0, y - ascent, 0, y + descent);
-  color.addColorStop(0, top);
-  color.addColorStop(1, bottom);
-  lettering.fillStyle = color;
-  lettering.fillRect(0, 0, 400, 142);
-
-  ctx.drawImage(glyphs, 0, 0, 400, 142);
-  return (left + right) / 2;
+  ctx.fillStyle = grad(y - ascent, ascent + descent, top, bottom);
+  ctx.fillText(text, x, y);
 }
 
 for (const [locale, alphabet] of [['ru', 'cyrillic'], ['en', 'latin']]) {
   const font = `Studio Wordmark ${alphabet}`;
   const file = new URL(`../node_modules/@fontsource/lora/files/lora-${alphabet}-700-normal.woff2`, import.meta.url);
   if (!GlobalFonts.registerFromPath(fileURLToPath(file), font)) throw new Error(`Could not load ${font}`);
-  save(`wordmark-${locale}`, sheet(400, 142, () => {
-    wordmarkLettering(word(locale, 'titleTop'), font, 63, 36, '#674331', '#4d2e25');
-    const halfWidth = wordmarkLettering(word(locale, 'titleBottom'), font, locale === 'ru' ? 49 : 53,
-      100, '#985a46', '#794332');
+  save(`wordmark-${locale}`, sheet(wordmarkWidth, 142, () => {
+    const center = wordmarkWidth / 2;
+    wordmarkLettering(word(locale, 'titleTop'), font, 61, 298, 38, '#674331', '#4d2e25');
+    wordmarkLettering(word(locale, 'titleBottom'), font, locale === 'ru' ? 48 : 52, 272,
+      98, '#985a46', '#794332');
     for (const side of [-1, 1]) {
-      const x = 200 + side * (halfWidth + 16);
-      line([[x, 110], [x + side * 10, 107, x + side * 19, 102, x + side * 23, 95]], '#8c946a', 1.6);
-      leaf(x + side * 6, 108, '#789066', side);
-      oval(x + side * 28, 98, 2.2, 2.2, '#bd8754');
-      line([[200 + side * 11, 132], [200 + side * 44, 133], [200 + side * 58, 130]], '#bf9464', 1.5);
+      line([[center + side * 12, 130], [center + side * 39, 132, center + side * 54, 130,
+        center + side * 58, 127]], '#bf9464', 1.5);
     }
-    shine(200, 132, 4, '#b2824c');
+    shine(center, 130, 4, '#b2824c');
   }, 3));
 }
 
@@ -382,7 +374,7 @@ save('victory', sheet(212, 206, () => {
   line([[41, 131], [172, 131]], '#926140', 1.5);
   line([[45, 156], [167, 156]], '#f2ce936b', 2);
   oval(105, 143, 15, 15, '#f7dfab');
-  line([[98, 143], [103, 148], [112, 137]], '#5f805e', 2.6);
+  line([[98, 143], [103, 148], [112, 137]], '#8c4f3a', 2.6);
   shine(32, 61, 8, '#d5a053'); shine(169, 45, 10, '#d5a053');
   shine(185, 79, 5, '#d5a053'); shine(62, 27, 5, '#d5a053');
 }));
