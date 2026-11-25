@@ -178,13 +178,13 @@ export class StudioScene extends Phaser.Scene {
   private drawLevels() {
     const view = this.view;
     this.header(this.tr('chapters'), () => this.go('menu'));
+    view.surface('panel', 240, 410, 430, 616);
     for (let index = 0; index < CHAPTERS.length; index++) {
-      view.button(101 + index * 139, 128, 132, 54, `${this.tr('chapter')} ${index + 1}`,
+      view.button(101 + index * 139, 148, 132, 54, `${this.tr('chapter')} ${index + 1}`,
         () => { this.chapter = index; this.draw(); }, { kind: this.chapter === index ? 'sage' : 'paper', size: 18 });
     }
     const levels = LEVELS.filter(item => item.chapter === this.chapter);
     const cleared = levels.filter(item => this.store.isCleared(item.id)).length;
-    view.surface('panel', 240, 446, 430, 544);
     view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 30, { serif: true, bold: true });
     view.label(`${cleared}/6 ${this.tr('completed')}`, 240, 262, 19, { color: mutedInk });
     for (const [index, item] of levels.entries()) {
