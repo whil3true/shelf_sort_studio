@@ -31,10 +31,9 @@ interface BoardMotion {
 }
 
 const frontSize = 63;
-const rearSize = 56;
+const rearSize = 54;
 const rearOffset = { x: 5, y: -25 };
-const rearLight = 195;
-const rearAlpha = 0.78;
+const sliderAccent = 0x9a533b;
 
 const art = [...GOODS, 'shelf', 'shop', 'victory', 'wordmark-ru', 'wordmark-en',
   ...CONTROL_ICONS.map(name => `control-${name}`)];
@@ -74,6 +73,7 @@ export class StudioScene extends Phaser.Scene {
   }
 
   create() {
+    this.prepareStockTextures();
     this.view = new StudioView(this, () => this.host.audio('ui_click'));
     configureCamera(this, () => {
       this.view.resizeBackdrop();
@@ -95,6 +95,26 @@ export class StudioScene extends Phaser.Scene {
     this.draw();
     // The first frame contains all textures, strings and input zones.
     this.game.events.once(Phaser.Core.Events.POST_RENDER, () => this.host.ready());
+  }
+
+  private prepareStockTextures() {
+    const textures = this.textures;
+    for (const good of GOODS) {
+      const key = `stock-${good}`;
+      if (textures.exists(key)) continue;
+      const { width, height } = textures.getFrame(good);
+      const texture = textures.createCanvas(key, width, height)!;
+      texture.drawFrame(good, undefined, 0, 0, false);
+      const ctx = texture.getContext();
+      const shadow = ctx.createLinearGradient(0, height * 0.19, 0, height * 0.91);
+      shadow.addColorStop(0, 'rgba(66, 38, 28, 0.57)');
+      shadow.addColorStop(1, 'rgba(76, 46, 33, 0.34)');
+      // Shade the pixels inside the sprite so its original alpha is preserved in Canvas and WebGL.
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = shadow;
+      ctx.fillRect(0, 0, width, height);
+      texture.refresh();
+    }
   }
 
   setBlocked(blocked: boolean) {
@@ -208,7 +228,7 @@ export class StudioScene extends Phaser.Scene {
       const done = this.store.isCleared(item.id);
       const description = done ? this.tr('cleared') : live ? this.tr('level') : this.tr('locked');
       view.button(x, y, 168, 108, String(item.id).padStart(2, '0'), () => this.tryOpen(item.id), {
-        kind: done ? 'sage' : 'paper', size: 36, live, icon: done ? 'check' : live ? undefined : 'lock',
+        kind: done ? 'completed' : 'paper', size: 36, live, icon: done ? 'check' : live ? undefined : 'lock',
         caption: description,
       });
     }
@@ -247,9 +267,8 @@ export class StudioScene extends Phaser.Scene {
       rear?.forEach((good, slot) => {
         if (!good) return;
         const at = this.slotPosition({ shelf: index, slot }, board.length);
-        const item = view.image(good, at.x + rearOffset.x, at.y + rearOffset.y, rearSize, rearSize)
-          .setTint(rearLight * 0x010101).setAlpha(rearAlpha);
-        if (revealing) this.trackMotion(progress => item.setAlpha(rearAlpha * progress));
+        const item = view.image(`stock-${good}`, at.x + rearOffset.x, at.y + rearOffset.y, rearSize, rearSize);
+        if (revealing) this.trackMotion(progress => item.setAlpha(progress));
       });
 
       if (event?.type === 'match') {
@@ -266,8 +285,8 @@ export class StudioScene extends Phaser.Scene {
         const advised = this.hint && (sameSlot(this.hint.from, slot) || sameSlot(this.hint.to, slot));
         if (picked || advised || targeted || valid) {
           const invalid = targeted && !valid;
-          const fill = invalid ? 0xc57965 : picked || advised ? 0xffdda0 : 0xcad4a9;
-          const stroke = invalid ? 0xfbd3c4 : picked || advised ? 0xfce4a8 : 0xf4f7cb;
+          const fill = invalid ? 0xc57965 : picked || advised ? 0xffdda0 : 0xeeb99b;
+          const stroke = invalid ? 0xfbd3c4 : picked || advised ? 0xfce4a8 : 0xffe0c2;
           view.box(at.x, at.y + 3, 59, 60, fill, picked || advised || targeted ? 0.79 : 0.59, 10, stroke);
         }
         const front = revealing ? shelf.stock[0][indexInShelf] : good;
@@ -278,14 +297,14 @@ export class StudioScene extends Phaser.Scene {
         const item = view.image(front, at.x, at.y, frontSize, frontSize)
           .setAlpha(picked && this.gesture?.dragging ? 0.24 : 1);
         if (revealing) {
+          const shaded = view.image(`stock-${front}`, at.x, at.y, frontSize, frontSize);
           this.trackMotion(progress => {
             const depth = 1 - progress;
             const size = frontSize + (rearSize - frontSize) * depth;
-            const light = Math.round(255 - (255 - rearLight) * depth);
-            item.setPosition(at.x + rearOffset.x * depth, at.y + rearOffset.y * depth)
-              .setDisplaySize(size, size)
-              .setTint(light * 0x010101)
-              .setAlpha(1 - (1 - rearAlpha) * depth);
+            const x = at.x + rearOffset.x * depth;
+            const y = at.y + rearOffset.y * depth;
+            item.setPosition(x, y).setDisplaySize(size, size).setVisible(progress > 0);
+            shaded.setPosition(x, y).setDisplaySize(size, size).setAlpha(depth);
           });
         } else if (event?.type === 'match') {
           this.trackMotion(progress => item.setY(at.y - 20 * progress).setAlpha(1 - progress));
@@ -535,11 +554,11 @@ export class StudioScene extends Phaser.Scene {
           this.store.setLocale(locale);
           this.applyLocale();
           this.draw();
-        }, { kind: this.locale === locale ? 'sage' : 'paper', size: 20 });
+        }, { kind: this.locale === locale ? 'honey' : 'paper', size: 20 });
       }
       this.slider('music', 402);
       this.slider('effects', 486);
-      view.button(240, 566, 340, 59, this.tr('close'), () => this.overlay(null), { kind: 'sage' });
+      view.button(240, 566, 340, 59, this.tr('close'), () => this.overlay(null), { kind: 'honey' });
       return;
     }
     if (modal === 'help') {
@@ -550,7 +569,7 @@ export class StudioScene extends Phaser.Scene {
         view.image(name, 81, 261 + index * 85, 49, 49);
         view.label(this.tr((`help${index + 1}`) as TextKey), 112, 259 + index * 85, 20, { align: 'left', wrap: 299 });
       }
-      view.button(240, 614, 341, 61, this.tr('close'), () => this.overlay(null), { kind: 'sage' });
+      view.button(240, 614, 341, 61, this.tr('close'), () => this.overlay(null), { kind: 'honey' });
       return;
     }
     view.surface('panel', 240, 400, 430, 284);
@@ -567,7 +586,7 @@ export class StudioScene extends Phaser.Scene {
           this.store.saveRun(this.level, this.session!);
           this.overlay(null);
         }
-      }, { kind: modal === 'hint' ? 'sage' : 'clay', size: 18 });
+      }, { kind: modal === 'hint' ? 'honey' : 'clay', size: 18 });
   }
 
   private slider(channel: 'music' | 'effects', y: number) {
@@ -578,8 +597,8 @@ export class StudioScene extends Phaser.Scene {
     const value = this.store.volumes[channel];
     const number = view.label(`${Math.round(value * 100)}%`, 373, y - 20, 17, { color: mutedInk });
     view.box(left + width / 2, y + 12, width, 8, 0xe1c6a7, 1, 4);
-    const fill = view.box(left, y + 12, width, 8, 0x76845e, 1, 4);
-    const thumb = view.box(left + value * width, y + 12, 22, 22, 0x76845e, 1, 11, 0xfff2db);
+    const fill = view.box(left, y + 12, width, 8, sliderAccent, 1, 4);
+    const thumb = view.box(left + value * width, y + 12, 22, 22, sliderAccent, 1, 11, 0xfff2db);
     const render = (updated: number) => {
       const pixels = updated * width;
       fill.setScale(Math.max(0.001, updated), 1).setX(left + pixels / 2);
