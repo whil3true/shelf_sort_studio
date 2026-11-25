@@ -173,6 +173,99 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   expect(errors).toEqual([]);
 });
 
+test('stock sits behind the front slots, advances on reveal and restores with Undo and Reload', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  const { board, solution: [first, reveal, next] } = LEVELS[9];
+  // Start level 10, with two stock rows and an empty middle slot on the top-left shelf.
+  await page.addInitScript(key => {
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, JSON.stringify({
+      version: 1, locale: 'en', cleared: Array.from({ length: 9 }, (_, i) => i + 1),
+      active: { level: 10, moves: [] },
+    }));
+  }, saveKey);
+  await page.goto('./');
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 621);
+  await expect(canvas(page, 'Level')).toBeVisible();
+
+  const sample = async (shelf: number, x: number, y: number, width: number, height: number) => {
+    const middle = slotPoint({ shelf, slot: 1 }, board.length);
+    const at = await point(page, middle.x + x, middle.y + y);
+    return page.screenshot({ clip: { ...at, width, height }, scale: 'css' });
+  };
+  const stockShelf = () => sample(0, -92, -49, 185, 86);
+  const rearCenter = (shelf: number) => sample(shelf, -9, -40, 28, 21);
+  const initial = await stockShelf();
+  const stockInEmptySlot = await rearCenter(0);
+  expect(stockInEmptySlot.equals(await rearCenter(2))).toBe(false);
+
+  // A drag from the visible stock of an empty front slot cannot move the stock.
+  const rear = slotPoint({ shelf: 0, slot: 1 }, board.length);
+  const target = slotPoint(first.to, board.length);
+  await page.mouse.move(rear.x + 5, rear.y - 25);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y, { steps: 6 });
+  await page.mouse.up();
+  expect((await readSave(page))?.active?.moves).toEqual([]);
+  // Cancelling a drag from a front item clears the gesture before it can place the item.
+  const origin = slotPoint(first.from, board.length);
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y);
+  await page.evaluate(() => document.querySelector('canvas')!.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true })));
+  await page.mouse.up();
+  expect((await readSave(page))?.active?.moves).toEqual([]);
+
+  const intoStockShelf: Move = { from: { shelf: 1, slot: 0 }, to: { shelf: 0, slot: 1 } };
+  await inputMove(page, intoStockShelf, 'click', board.length);
+  await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([intoStockShelf]);
+  await click(page, 91, 739);
+  await expect.poll(async () => (await stockShelf()).equals(initial)).toBe(true);
+
+  await inputMove(page, first, 'drag', board.length);
+  await expect.poll(async () => (await rearCenter(0)).equals(stockInEmptySlot)).toBe(true);
+  const partial = await stockShelf();
+  expect(partial.equals(initial)).toBe(false);
+  await click(page, 91, 739);
+  await expect.poll(async () => (await stockShelf()).equals(initial)).toBe(true);
+
+  await inputMove(page, first, 'click', board.length);
+  await expect.poll(async () => (await stockShelf()).equals(partial)).toBe(true);
+
+  const undoControl = () => page.screenshot({ clip: { x: 40, y: 721, width: 90, height: 37 }, scale: 'css' });
+  const undoReady = await undoControl();
+  const taps = (move: Move) => [move.from, move.to].map(slot => slotPoint(slot, board.length));
+  // Dispatch both moves in one browser task so the second lands before the reveal can advance.
+  await page.locator('canvas').evaluate((element, coordinates) => {
+    for (const { x, y } of coordinates) {
+      const event = { bubbles: true, clientX: x, clientY: y, button: 0 };
+      element.dispatchEvent(new MouseEvent('mousedown', { ...event, buttons: 1 }));
+      element.dispatchEvent(new MouseEvent('mouseup', event));
+    }
+  }, [...taps(reveal), ...taps(next)]);
+  expect((await readSave(page))?.active?.moves).toEqual([first, reveal]);
+  await expect.poll(async () => (await undoControl()).equals(undoReady)).toBe(true);
+  const revealed = await stockShelf();
+  expect(revealed.equals(partial)).toBe(false);
+
+  await inputMove(page, next, 'click', board.length);
+  await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([first, reveal, next]);
+  await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(false);
+  await click(page, 91, 739);
+  await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(true);
+  await click(page, 91, 739);
+  await expect.poll(async () => (await stockShelf()).equals(partial)).toBe(true);
+  await inputMove(page, reveal, 'click', board.length);
+  await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(true);
+
+  await page.reload();
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 621);
+  await expect(canvas(page, 'Level')).toBeVisible();
+  await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(true);
+});
+
 test('SDK locale precedes the first frame and manual language and both volume controls survive reload', async ({ page }) => {
   await mocked(page, 'ru');
   await page.goto('./');

@@ -1,8 +1,8 @@
 import Phaser from 'phaser';
 
-export const ink = '#452f26';
-export const mutedInk = '#715747';
-const olive = '#303d2e';
+export const ink = '#53372c';
+export const mutedInk = '#735748';
+const olive = '#414e36';
 const serif = '"Studio Serif", Georgia, serif';
 const sans = '"Studio Sans", Arial, sans-serif';
 
@@ -11,12 +11,13 @@ type ControlIcon = (typeof CONTROL_ICONS)[number];
 export type Icon = 'back' | 'settings' | 'help' | 'lock' | 'check' | 'arrow' | ControlIcon;
 
 const surfaces = {
-  sage: { top: '#cbd4b6', bottom: '#b5c09f', radius: 12 },
-  paper: { top: '#fff8ea', bottom: '#f4e5cc', radius: 12 },
-  clay: { top: '#edc3af', bottom: '#dfaa96', radius: 12 },
-  muted: { top: '#eee2cc', bottom: '#e9d9c0', radius: 12 },
-  panel: { top: '#fffaf0', bottom: '#f9edd9', radius: 18 },
-  notice: { top: '#fff8eb', bottom: '#f7ebd7', radius: 10 },
+  honey: { top: '#f6dba4', bottom: '#e9bb7f', radius: 12 },
+  sage: { top: '#e2e6cc', bottom: '#cbd5b4', radius: 12 },
+  paper: { top: '#fff6e7', bottom: '#f4e2c9', radius: 12 },
+  clay: { top: '#f2c8b4', bottom: '#e3ad97', radius: 12 },
+  muted: { top: '#eee0d0', bottom: '#e7d5c0', radius: 12 },
+  panel: { top: '#fff9ef', bottom: '#faebd8', radius: 18 },
+  notice: { top: '#fff4e5', bottom: '#f5e3ca', radius: 10 },
 } as const;
 type Surface = keyof typeof surfaces;
 const surfacePadding = 8;
@@ -25,7 +26,7 @@ function isControlIcon(icon: Icon): icon is ControlIcon {
   return icon === 'undo' || icon === 'restart' || icon === 'hint';
 }
 export interface ButtonOptions {
-  kind?: 'sage' | 'paper' | 'clay';
+  kind?: 'honey' | 'sage' | 'paper' | 'clay';
   live?: boolean;
   icon?: Icon;
   size?: number;
@@ -100,12 +101,14 @@ export class StudioView {
   }
 
   label(text: string, x: number, y: number, size = 23, options: {
-    color?: string; bold?: boolean; serif?: boolean; align?: 'left' | 'center'; wrap?: number;
+    color?: string; bold?: boolean; serif?: boolean; weight?: 600 | 700;
+    tracking?: number; align?: 'left' | 'center'; wrap?: number;
   } = {}) {
     const label = this.scene.add.text(x, y, text, {
       fontFamily: options.serif ? serif : sans, fontSize: size,
       resolution: this.density,
-      fontStyle: options.bold || options.serif ? 'bold' : undefined, color: options.color ?? ink,
+      fontStyle: String(options.weight ?? (options.bold || options.serif ? 700 : 400)),
+      color: options.color ?? ink, letterSpacing: options.tracking ?? 0,
       align: options.align ?? 'center', wordWrap: { width: options.wrap ?? 436 },
       lineSpacing: 5, padding: { x: 2, y: 3 },
     }).setOrigin(options.align === 'left' ? 0 : 0.5, 0.5);
@@ -165,8 +168,11 @@ export class StudioView {
     const controlIcon = icon !== undefined && isControlIcon(icon);
     const labelY = options.caption ? y - 16 : y;
     const label = this.label(text, x + (text && icon && !options.caption ? (controlIcon ? 13 : 10) : 0), labelY,
-      options.size ?? 22, { color, bold: true, wrap: w - (text && icon ? 36 : 12) });
-    if (options.caption) this.label(options.caption, x, y + 23, 17, { color: mutedInk, wrap: w - 24 });
+      options.size ?? 22, { color, serif: !!options.caption, weight: kind === 'honey' || options.caption ? 700 : 600,
+        wrap: w - (text && icon ? 36 : 12) });
+    if (options.caption) this.label(options.caption.toUpperCase(), x, y + 21, 14, {
+      color: kind === 'sage' ? olive : mutedInk, weight: 600, tracking: 0.8, wrap: w - 24,
+    });
     if (controlIcon) {
       let iconX = x - w / 2 + 21;
       if (icon === 'restart') {
@@ -180,7 +186,7 @@ export class StudioView {
       this.image(`control-${icon}`, iconX, y, 27, 27).setAlpha(live ? 1 : 0.74);
     } else if (icon) {
       this.icon(icon, x - (text ? w / 2 - 22 : 0), options.caption ? y - 8 : labelY,
-        kind === 'sage' ? 0x303d2e : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
+        kind === 'sage' ? 0x414e36 : live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
     }
     if (!live) return;
     const zone = this.hit(x, y, w - 3, h - 6);
