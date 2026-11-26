@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { goodsLeft, isWon, moveGood, type Board, type Move } from '../../src/game/Board.ts';
 import { Session } from '../../src/game/Session.ts';
+import { boardAnimationStages } from '../../src/ui/BoardAnimation.ts';
 
 const board: Board = [
   { front: ['jam', null, null], stock: [['tea', 'tea', 'tea'], ['jam', null, null]] },
@@ -28,6 +29,31 @@ test('a match and both source reveals settle atomically without counting a match
   ]);
   assert.equal(goodsLeft(result.board), 1);
   assert.equal(isWon(result.board), false);
+});
+
+test('consecutive stock stages cue the first reveal of each move and keep both match sounds', () => {
+  const { events } = moveGood(board, first)!;
+  for (let replay = 0; replay < 2; replay++) {
+    const stages = [...boardAnimationStages(events)];
+    assert.deepEqual(stages.map(stage => [...stage.events.values()]), events.map(event => [event]));
+    assert.deepEqual(stages.map(stage => stage.effect), ['match_three', 'shelf_reveal', 'match_three', null]);
+  }
+});
+
+test('parallel reveals and parallel matches each play once for the entire stage', () => {
+  const bothWithStock: Board = [board[0], { ...board[1], stock: [['apple', 'apple', 'apple']] }, board[2]];
+  const { events } = moveGood(bothWithStock, first)!;
+  const stages = [...boardAnimationStages(events)];
+  assert.deepEqual(stages.map(stage => ({
+    shelves: [...stage.events.keys()],
+    types: [...stage.events.values()].map(event => event.type),
+    effect: stage.effect,
+  })), [
+    { shelves: [1], types: ['match'], effect: 'match_three' },
+    { shelves: [1, 0], types: ['reveal', 'reveal'], effect: 'shelf_reveal' },
+    { shelves: [1, 0], types: ['match', 'match'], effect: 'match_three' },
+    { shelves: [0], types: ['reveal'], effect: null },
+  ]);
 });
 
 test('a move within one shelf uses the source and destination of the same front', () => {

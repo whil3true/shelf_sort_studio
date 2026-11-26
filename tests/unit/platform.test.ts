@@ -364,7 +364,6 @@ test('touch release retries a pending unlock and effects expire or are invalidat
   await Promise.resolve();
   assert.equal(played.mock.callCount(), 0);
   audio.play('item_pickup');
-  audio.play('item_pickup');
   assert.equal(played.mock.callCount(), 1);
 
   audio.setPaused(true);
@@ -378,6 +377,47 @@ test('touch release retries a pending unlock and effects expire or are invalidat
   assert.equal(played.mock.callCount(), 1);
   audio.play('item_pickup');
   assert.equal(played.mock.callCount(), 2);
+});
+
+test('the shared pickup and reveal buffer replaces its previous voice and rapid UI clicks both play', async t => {
+  const calls: string[] = [];
+  const voices: { onended: (() => void) | null }[] = [];
+  mockGlobal(t, 'performance', { now: () => 100 });
+  t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1])));
+  class Context {
+    state = 'running';
+    createGain() { return { gain: { value: 0 }, connect() {} }; }
+    createBufferSource() {
+      const id = voices.length;
+      const voice = {
+        connect() {}, disconnect() {},
+        onended: null,
+        start() { calls.push(`start:${id}`); },
+        stop() { calls.push(`stop:${id}`); },
+      };
+      voices.push(voice);
+      return voice;
+    }
+    async decodeAudioData() { return {}; }
+    async suspend() { this.state = 'suspended'; }
+  }
+  mockGlobal(t, 'AudioContext', Context);
+  const audio = new BrowserAudioOutput(event =>
+    event === 'item_pickup' || event === 'shelf_reveal' ? 'shared' : event === 'ui_click' ? 'click' : null);
+  audio.setVolumes({ music: 0, effects: 1 });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  audio.unlock();
+
+  audio.play('item_pickup');
+  audio.play('shelf_reveal');
+  // The stopped pickup's ended callback must not clear the active reveal voice.
+  voices[0].onended?.();
+  audio.play('item_pickup');
+  audio.play('ui_click');
+  audio.play('ui_click');
+  assert.deepEqual(calls, ['start:0', 'stop:0', 'start:1', 'stop:1', 'start:2', 'start:3', 'start:4']);
+  audio.setPaused(true);
+  assert.deepEqual(calls.slice(7), ['stop:2', 'stop:3', 'stop:4']);
 });
 
 test('a failed decode prepares a reusable media fallback that only plays a ready sound on a new action', async t => {
@@ -420,12 +460,13 @@ test('a failed decode prepares a reusable media fallback that only plays a ready
   player.readyState = Player.HAVE_ENOUGH_DATA;
   assert.equal(player.play.mock.callCount(), 0);
   audio.play('item_pickup');
-  audio.play('item_pickup');
-  assert.equal(player.play.mock.callCount(), 1);
+  player.currentTime = 0.05;
+  audio.play('shelf_reveal');
+  assert.equal(player.play.mock.callCount(), 2);
   assert.equal(player.currentTime, 0);
   assert.equal(player.volume, 0.4);
   audio.setPaused(true);
   assert.equal(player.paused, true);
   audio.play('item_pickup');
-  assert.equal(player.play.mock.callCount(), 1);
+  assert.equal(player.play.mock.callCount(), 2);
 });

@@ -17,7 +17,8 @@ export class BrowserAudioOutput implements AudioOutput {
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly fallbackEffects = new Map<string, HTMLAudioElement>();
   private readonly voices = new Set<AudioBufferSourceNode>();
-  private readonly lastEffectAt = new Map<AudioEffect, number>();
+  private readonly sharedShelfPath: string | null;
+  private sharedShelfVoice: AudioBufferSourceNode | null = null;
   private effectsResume: Promise<void> | null = null;
   private effectsPauseRevision = 0;
   private volumes: Readonly<Volumes> = { music: 0, effects: 0 };
@@ -30,6 +31,8 @@ export class BrowserAudioOutput implements AudioOutput {
 
   constructor(pathFor: typeof audioPath = audioPath) {
     this.pathFor = pathFor;
+    const pickup = pathFor('item_pickup');
+    this.sharedShelfPath = pickup === pathFor('shelf_reveal') ? pickup : null;
     const paths = new Set((Object.keys(AUDIO_ASSETS) as AudioEvent[])
       .filter(event => event !== 'background_music').map(event => pathFor(event)));
     paths.delete(null);
@@ -89,9 +92,9 @@ export class BrowserAudioOutput implements AudioOutput {
     if (paused) {
       this.effectsPauseRevision++;
       this.effectsResume = null;
-      this.lastEffectAt.clear();
       for (const voice of this.voices) voice.stop();
       this.voices.clear();
+      this.sharedShelfVoice = null;
       for (const player of this.fallbackEffects.values()) player.pause();
       void this.context?.suspend().catch(() => {});
     } else if (this.unlocked) {
@@ -106,27 +109,24 @@ export class BrowserAudioOutput implements AudioOutput {
     if (!path || !this.unlocked || this.paused || !this.volumes.effects) return;
     const buffer = this.buffers.get(path);
     const fallback = this.fallbackEffects.get(path);
-    if (!buffer && (!fallback || fallback.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || !fallback.paused)) return;
-
-    const now = performance.now();
-    const previous = this.lastEffectAt.get(effect);
-    if (previous !== undefined && now - previous < 50) return;
-    this.lastEffectAt.set(effect, now);
     if (!buffer) {
-      if (fallback) this.playFallback(fallback);
+      if (fallback && fallback.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) this.playFallback(fallback);
       return;
     }
+    const sharedShelfEffect = path === this.sharedShelfPath;
     if (this.context?.state === 'running') {
-      this.startEffect(buffer);
+      this.startEffect(buffer, sharedShelfEffect);
       return;
     }
 
     // A decoded clip can follow a gesture or ad resume by one audio startup interval.
     // Drop it if resume is slow or another pause supersedes the event.
     const revision = this.effectsPauseRevision;
-    const deadline = now + 100;
+    const deadline = performance.now() + 100;
     void this.effectsResume?.then(() => {
-      if (revision === this.effectsPauseRevision && performance.now() <= deadline) this.startEffect(buffer);
+      if (revision === this.effectsPauseRevision && performance.now() <= deadline) {
+        this.startEffect(buffer, sharedShelfEffect);
+      }
     }, () => {});
   }
 
@@ -155,15 +155,27 @@ export class BrowserAudioOutput implements AudioOutput {
     } catch { /* A later gesture may be allowed to play. */ }
   }
 
-  private startEffect(buffer: AudioBuffer): void {
+  private startEffect(buffer: AudioBuffer, sharedShelfEffect: boolean): void {
     if (this.paused || !this.volumes.effects || this.context?.state !== 'running' || !this.gain) return;
     try {
       const voice = this.context.createBufferSource();
       voice.buffer = buffer;
       voice.connect(this.gain);
-      voice.onended = () => { this.voices.delete(voice); voice.disconnect(); };
+      voice.onended = () => {
+        this.voices.delete(voice);
+        if (this.sharedShelfVoice === voice) this.sharedShelfVoice = null;
+        voice.disconnect();
+      };
+      // A quick release can reveal a row while the pickup sample is still playing.
+      // Restart that sample on its own voice without suppressing either action.
+      if (sharedShelfEffect && this.sharedShelfVoice) {
+        this.sharedShelfVoice.stop();
+        this.voices.delete(this.sharedShelfVoice);
+        this.sharedShelfVoice = null;
+      }
       voice.start();
       this.voices.add(voice);
+      if (sharedShelfEffect) this.sharedShelfVoice = voice;
     } catch { /* Unsupported or interrupted playback is silent. */ }
   }
 
