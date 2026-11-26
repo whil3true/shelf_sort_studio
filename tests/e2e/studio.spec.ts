@@ -432,12 +432,14 @@ type AudioProbe = {
   contexts: Set<BaseAudioContext>;
   screens: string[];
 };
-type AudioProbeWindow = Window & { studioAudio: AudioProbe };
+declare global {
+  interface Window { studioAudio: AudioProbe }
+}
 
 async function observeNativeAudio(page: Page) {
   await page.addInitScript(musicFile => {
     const probe: AudioProbe = { decoded: [], effects: [], starts: 0, contexts: new Set(), screens: [] };
-    (window as AudioProbeWindow).studioAudio = probe;
+    window.studioAudio = probe;
     const fileNames = new WeakMap<ArrayBuffer, string>();
     const buffers = new WeakMap<AudioBuffer, string>();
     const arrayBuffer = Response.prototype.arrayBuffer;
@@ -484,7 +486,7 @@ async function observeNativeAudio(page: Page) {
 
 function musicState(page: Page) {
   return page.evaluate(() => {
-    const { music, starts, screens, contexts } = (window as AudioProbeWindow).studioAudio;
+    const { music, starts, screens, contexts } = window.studioAudio;
     return {
       starts, screens, time: music?.currentTime ?? 0, paused: music?.paused ?? true,
       attached: music?.hasAttribute('src') ?? false, loop: music?.loop ?? false,
@@ -494,13 +496,13 @@ function musicState(page: Page) {
 }
 
 function effectsPlayed(page: Page) {
-  return page.evaluate(() => (window as AudioProbeWindow).studioAudio.effects);
+  return page.evaluate(() => window.studioAudio.effects);
 }
 
 async function waitForEffects(page: Page) {
   const expected = [...new Set(Object.values(audioAssets.files).filter(file => file !== audioAssets.files.background_music))];
-  await expect.poll(() => page.evaluate(() => (window as AudioProbeWindow).studioAudio.decoded.length)).toBe(expected.length);
-  expect(await page.evaluate(() => (window as AudioProbeWindow).studioAudio.decoded.sort())).toEqual(expected.sort());
+  await expect.poll(() => page.evaluate(() => window.studioAudio.decoded.length)).toBe(expected.length);
+  expect(await page.evaluate(() => window.studioAudio.decoded.sort())).toEqual(expected.sort());
 }
 
 test.describe('original audio playback', () => {
@@ -539,8 +541,8 @@ test.describe('original audio playback', () => {
     expect(after.time).toBeGreaterThan(before.time);
 
     // Seek once to make a restart from zero distinguishable from a genuine resume.
-    await page.evaluate(() => { (window as AudioProbeWindow).studioAudio.music!.currentTime = 12; });
-    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    await page.evaluate(() => { window.studioAudio.music!.currentTime = 12; });
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     await enter(page);
     await click(page, 389, 739);
     await expect(canvas(page, 'See the next move?')).toBeVisible();
@@ -552,7 +554,7 @@ test.describe('original audio playback', () => {
       mock.rewarded[0].onClose(false);
       mock.rewarded[0].onClose(true);
     });
-    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 2, attached: true, paused: false });
 
     await mockValue(page, mock => { mock.events.game_api_pause(); mock.events.game_api_pause(); });
@@ -560,13 +562,13 @@ test.describe('original audio playback', () => {
     await mockValue(page, mock => { mock.events.game_api_resume(); mock.events.game_api_resume(); });
     expect(await musicState(page)).toMatchObject({ starts: 2, attached: false, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
-    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 3, error: null, paused: false });
 
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
     expect(await musicState(page)).toMatchObject({ starts: 3, attached: false, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 4, error: null, paused: false });
     expect([...ogg].sort()).toEqual([...new Set(Object.values(audioAssets.files))].sort());
     expect(errors).toEqual([]);
