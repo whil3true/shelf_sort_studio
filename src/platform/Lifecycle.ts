@@ -70,11 +70,15 @@ export class Lifecycle {
 }
 
 export function attachBrowserLifecycle(lifecycle: Lifecycle) {
-  const visibility = () => lifecycle.pauseFor('hidden', document.hidden);
+  const focus = () => lifecycle.pauseFor('unfocused', false);
+  const visibility = () => {
+    // Mobile browsers can restore visibility without dispatching another focus event.
+    if (!document.hidden && document.hasFocus()) focus();
+    lifecycle.pauseFor('hidden', document.hidden);
+  };
   const hide = () => lifecycle.pauseFor('page', true);
   const show = () => { visibility(); lifecycle.pauseFor('page', false); };
   const blur = () => lifecycle.pauseFor('unfocused', true);
-  const focus = () => lifecycle.pauseFor('unfocused', false);
   const gesture = () => { if (document.hasFocus()) focus(); };
   document.addEventListener('visibilitychange', visibility);
   window.addEventListener('pagehide', hide);

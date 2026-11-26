@@ -542,11 +542,7 @@ export class StudioScene extends Phaser.Scene {
     this.motion = motion;
     this.draw();
 
-    if (matches.length) {
-      for (const _event of matches) this.host.audio('match_three');
-    } else {
-      this.host.audio('shelf_reveal');
-    }
+    this.host.audio(matches.length ? 'match_three' : 'shelf_reveal');
 
     this.tweens.addCounter({
       from: 0, to: 1, duration: matches.length ? 155 : 210,
@@ -579,9 +575,10 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private async completeLevel() {
-    this.host.audio('level_complete');
+    const session = this.session;
     this.go('victory');
     await this.host.interstitial();
+    if (this.screen === 'victory' && this.session === session) this.host.audio('level_complete');
   }
 
   private drawVictory() {

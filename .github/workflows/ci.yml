@@ -56,6 +56,13 @@ jobs:
           name: production-dist
           path: dist/
       - run: npx playwright install --with-deps "${{ matrix.browser }}"
+      - name: Start a virtual audio device
+        if: matrix.browser != 'chromium'
+        run: |
+          sudo apt-get install -y pulseaudio
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=shelf_audio
+          pactl set-default-sink shelf_audio
       - run: npm run test:e2e -- --project="${{ matrix.browser }}"
       - uses: actions/upload-artifact@v4
         if: failure()
