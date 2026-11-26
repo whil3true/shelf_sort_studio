@@ -15,12 +15,12 @@ GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint c
 ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (432, 272),
        'shop': (832, 514), 'victory': (424, 412),
        'wordmark-ru': (1200, 426), 'wordmark-en': (1200, 426)}
-FONT_LICENSES = {'assets/font-licenses/lora-OFL.txt', 'assets/font-licenses/manrope-OFL.txt'}
-FONT_FILE = re.compile(r'assets/(lora|manrope)-(latin|cyrillic)-[a-zA-Z0-9_.-]+\.woff2')
+FONT_LICENSES = {'assets/font-licenses/nunito-OFL.txt'}
+FONT_FILE = re.compile(r'assets/nunito-(latin|cyrillic)-[a-zA-Z0-9_.-]+\.woff2')
 ART.update({f'control-{name}': (96, 96) for name in ('undo', 'restart', 'hint')})
 ART_REFRESH = {f'assets/art-refresh/items/{name}.webp' for name in GOODS} | {
     'assets/art-refresh/shelves/shelf.webp', 'assets/art-refresh/logo/wordmark-ru.webp',
-    'assets/art-refresh/logo/wordmark-en.webp',
+    'assets/art-refresh/logo/wordmark-en.webp', 'assets/art-refresh/ui/shop.webp', 'assets/art-refresh/ui/victory.webp',
 }
 
 
@@ -72,10 +72,10 @@ def verify(names, read, audio, refresh):
         data = read(location)
         require(len(data) >= 20 and data[:4] == b'RIFF' and data[8:12] == b'WEBP'
                 and unpack('<I', data[4:8])[0] == len(data) - 8, f'Invalid WebP: {location}')
-    fonts = {tuple(FONT_FILE.fullmatch(name).groups()): name for name in names if FONT_FILE.fullmatch(name)}
-    require(set(fonts) == {(family, alphabet) for family in ('lora', 'manrope') for alphabet in ('latin', 'cyrillic')},
-            'The release needs Latin and Cyrillic font subsets for both families')
-    require(all(read(name).startswith(b'wOF2') for name in fonts.values()), 'Invalid WOFF2 file')
+    fonts = [name for name in names if FONT_FILE.fullmatch(name)]
+    require(sorted(FONT_FILE.fullmatch(name)[1] for name in fonts) == ['cyrillic', 'latin'],
+            'The release needs the Latin and Cyrillic Nunito font subsets')
+    require(all(read(name).startswith(b'wOF2') for name in fonts), 'Invalid WOFF2 file')
     require(FONT_LICENSES <= names, 'Missing font licenses')
     require(audio <= names, f'Missing installed audio: {sorted(audio - names)}')
 

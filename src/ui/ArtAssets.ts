@@ -1,6 +1,6 @@
 import { GOODS } from '../game/Board.ts';
 
-function asset<Id extends string>(id: Id, directory: 'items' | 'shelves' | 'logo') {
+function asset<Id extends string>(id: Id, directory: 'items' | 'shelves' | 'logo' | 'ui') {
   return { id, webp: `assets/art-refresh/${directory}/${id}.webp`, fallback: `assets/art/${id}.png` };
 }
 
@@ -9,6 +9,8 @@ export const ART_REFRESH = [
   asset('shelf', 'shelves'),
   asset('wordmark-ru', 'logo'),
   asset('wordmark-en', 'logo'),
+  asset('shop', 'ui'),
+  asset('victory', 'ui'),
 ];
 
 export type ArtId = (typeof ART_REFRESH)[number]['id'];
