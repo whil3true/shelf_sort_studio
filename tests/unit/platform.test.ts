@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { AudioRuntime, BrowserAudioOutput, type AudioOutput } from '../../src/audio/AudioRuntime.ts';
-import { AUDIO_ASSETS, audioPath, type AudioEffect } from '../../src/audio/AudioAssetManifest.ts';
+import { AUDIO_ASSETS, audioPath, type AudioEffect, type AudioEvent } from '../../src/audio/AudioAssetManifest.ts';
+import assets from '../../src/audio/AudioAssets.json' with { type: 'json' };
 import { Ads } from '../../src/platform/Ads.ts';
 import { Lifecycle, INTERSTITIAL_COOLDOWN } from '../../src/platform/Lifecycle.ts';
 import { standaloneHost, YandexPlatform, type AdCallbacks, type YandexSdk } from '../../src/platform/Platform.ts';
@@ -146,7 +147,16 @@ test('first locale uses SDK, manual choice wins over SDK and Pages stays standal
   assert.equal(standaloneHost('yandex.net'), false);
 });
 
-test('audio works with a mock output while all supplied paths are disabled', () => {
+function mockGlobal(t: TestContext, name: string, value: unknown) {
+  const original = Object.getOwnPropertyDescriptor(globalThis, name);
+  Object.defineProperty(globalThis, name, { configurable: true, value });
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, name, original);
+    else Reflect.deleteProperty(globalThis, name);
+  });
+}
+
+test('audio gates grouped pauses and the disabled manifest does not touch browser audio', t => {
   const calls: (string | boolean | Readonly<Volumes>)[] = [];
   const output: AudioOutput = {
     unlock: () => calls.push('unlock'), play: effect => calls.push(effect),
@@ -159,12 +169,138 @@ test('audio works with a mock output while all supplied paths are disabled', () 
   rt.pauseFor('ads', true);
   rt.pauseFor('browser', false);
   rt.pauseFor('ads', false);
-  assert.deepEqual(calls, [{ music: 1, effects: 0.5 }, 'unlock', 'shelf_reveal', true, true, true, false]);
+  assert.deepEqual(calls, [{ music: 1, effects: 0.5 }, 'unlock', 'shelf_reveal', true, false]);
 
-  const browser = new BrowserAudioOutput();
-  browser.unlock();
-  for (const [event, options] of Object.entries(AUDIO_ASSETS)) {
-    if (event !== 'background_music') browser.play(event as AudioEffect);
-    if (!options.enabled) assert.equal(audioPath(event as keyof typeof AUDIO_ASSETS), null);
+  for (const event of Object.keys(AUDIO_ASSETS) as AudioEvent[]) {
+    assert.equal(audioPath(event), assets.enabled ? `./assets/audio/${AUDIO_ASSETS[event]}` : null);
   }
+  if (assets.enabled) return;
+
+  const construct = t.mock.fn(function () {});
+  mockGlobal(t, 'Audio', construct);
+  mockGlobal(t, 'AudioContext', construct);
+  const fetch = t.mock.method(globalThis, 'fetch');
+  const browser = new BrowserAudioOutput();
+  browser.setVolumes({ music: 1, effects: 1 });
+  browser.unlock();
+  for (const event of Object.keys(AUDIO_ASSETS)) {
+    if (event !== 'background_music') browser.play(event as AudioEffect);
+  }
+  assert.equal(construct.mock.callCount(), 0);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('music uses one logical loop through navigation, overlapping SDK pauses and ad no-fill', async t => {
+  const players: Player[] = [];
+  let rejectStart = () => {};
+  class Player {
+    paused = true;
+    loop = false;
+    volume = 0;
+    currentTime = 0;
+    starts = 0;
+    released = false;
+    constructor() { players.push(this); }
+    play() {
+      this.starts++;
+      if (players.length === 1 && this.starts === 1) {
+        return new Promise<void>((_resolve, reject) => { rejectStart = () => reject(new Error('autoplay denied')); });
+      }
+      this.paused = false;
+      return Promise.resolve();
+    }
+    pause() { this.paused = true; }
+    removeAttribute(name: string) { assert.equal(name, 'src'); this.released = true; }
+    load() {}
+  }
+
+  mockGlobal(t, 'Audio', Player);
+  const mediaSession = { playbackState: 'playing', metadata: { title: 'Track' } };
+  mockGlobal(t, 'navigator', { mediaSession });
+  const audio = new AudioRuntime(new BrowserAudioOutput(event => event === 'background_music' ? 'mock-music' : null),
+    { music: 0.6, effects: 0.5 });
+  const { platform, events, ads } = platformFixture();
+  let now = 0;
+  const lifecycle = new Lifecycle(platform, blocked => audio.pauseFor('platform', blocked), () => now);
+  lifecycle.ready();
+  assert.equal(players.length, 0);
+  audio.unlock();
+  audio.unlock();
+  assert.equal(players.length, 1);
+  assert.equal(players[0].starts, 1);
+  rejectStart();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  audio.unlock();
+  assert.equal(players[0].starts, 2);
+  assert.equal(players[0].loop, true);
+  lifecycle.playing(true);
+  lifecycle.playing(false);
+  audio.setVolumes({ music: 0.6, effects: 0 });
+  assert.equal(players[0].volume, 0.6);
+  assert.equal(players.length, 1);
+
+  players[0].currentTime = 14;
+  now += INTERSTITIAL_COOLDOWN;
+  const ad = lifecycle.interstitial();
+  assert.equal(players[0].released, true);
+  assert.deepEqual(mediaSession, { playbackState: 'none', metadata: null });
+  events.get('game_api_pause')!();
+  lifecycle.pauseFor('hidden', true);
+  ads[0].onClose(false);
+  ads[0].onClose(true);
+  await ad;
+  events.get('game_api_resume')!();
+  events.get('game_api_resume')!();
+  audio.unlock();
+  assert.equal(players.length, 1);
+  lifecycle.pauseFor('hidden', false);
+  assert.equal(players.length, 2);
+  assert.equal(players[1].currentTime, 14);
+  assert.equal(players[1].starts, 1);
+  assert.equal(players[1].volume, 0.6);
+
+  audio.setVolumes({ music: 0, effects: 1 });
+  assert.equal(players[1].released, true);
+  audio.setVolumes({ music: 0.25, effects: 1 });
+  assert.equal(players.length, 3);
+  assert.equal(players[2].volume, 0.25);
+  assert.equal(players[2].currentTime, 14);
+});
+
+test('effects preload shared resources once, respect their own volume and stop across pauses', async t => {
+  const gain = { gain: { value: 1 }, connect() {} };
+  const calls: string[] = [];
+  const fetch = t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1])));
+  class Context {
+    state = 'suspended';
+    createGain() { return gain; }
+    createBufferSource() {
+      return {
+        connect() {},
+        start() { calls.push('play'); },
+        stop() { calls.push('stop'); },
+      };
+    }
+    async decodeAudioData() { return {}; }
+    async suspend() { calls.push('suspend'); }
+    async resume() { this.state = 'running'; calls.push('resume'); }
+  }
+  mockGlobal(t, 'AudioContext', Context);
+  const audio = new BrowserAudioOutput(event => event === 'item_pickup' || event === 'shelf_reveal' ? 'shared-effect' : null);
+  assert.equal(fetch.mock.callCount(), 1);
+  audio.setVolumes({ music: 0, effects: 0.35 });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  audio.play('item_pickup');
+  assert.deepEqual(calls, []);
+  audio.unlock();
+  audio.play('item_pickup');
+  assert.equal(gain.gain.value, 0.35);
+  audio.setPaused(true);
+  audio.play('shelf_reveal');
+  audio.setPaused(false);
+  audio.play('shelf_reveal');
+  audio.setVolumes({ music: 0.8, effects: 0 });
+  audio.play('shelf_reveal');
+  assert.equal(gain.gain.value, 0);
+  assert.deepEqual(calls, ['resume', 'play', 'stop', 'suspend', 'resume', 'play']);
 });

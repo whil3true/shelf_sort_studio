@@ -4,13 +4,14 @@ from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from struct import unpack
 from zipfile import ZIP_DEFLATED, ZipFile
+import json
 import re
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / 'dist'
 ART_REFRESH_DIRS = {'items', 'shelves', 'logo', 'ui'}
 ART_REFRESH_PLACEHOLDERS = {f'assets/art-refresh/{folder}/.gitkeep' for folder in ART_REFRESH_DIRS}
-MANIFEST = ROOT / 'src/audio/AudioAssetManifest.ts'
+MANIFEST = ROOT / 'src/audio/AudioAssets.json'
 GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint cookie'.split()
 ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (432, 272),
        'shop': (832, 514), 'victory': (424, 412),
@@ -43,12 +44,14 @@ def require(condition, problem):
 
 
 def allowed_audio():
-    entries = re.findall(r"file: '([^']+)', enabled: (true|false)", MANIFEST.read_text())
+    manifest = json.loads(MANIFEST.read_text())
+    require(type(manifest['enabled']) is bool, 'Invalid audio activation flag')
+    entries = manifest['files']
     require(len(entries) == 8, 'Expected eight audio manifest entries')
-    enabled = {f'assets/audio/{name}' for name, flag in entries if flag == 'true'}
-    require(all(re.fullmatch(r'assets/audio/[a-zA-Z0-9_-]+\.(ogg|mp3|wav|m4a|aac)', name) for name in enabled),
-            'Invalid audio manifest filename')
-    return enabled
+    files = {f'assets/audio/{name}' for name in entries.values()}
+    require(len(files) == 7 and all(re.fullmatch(r'assets/audio/[a-zA-Z0-9_-]+\.ogg', name) for name in files),
+            'Expected seven distinct OGG files in the audio manifest')
+    return files if manifest['enabled'] else set()
 
 
 def verify(names, read, audio, refresh):

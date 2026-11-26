@@ -17,8 +17,8 @@ async function start() {
     audio.pauseFor('platform', blocked);
     scene?.setBlocked(blocked);
   });
-  attachAudioGestures(audio);
   attachBrowserLifecycle(lifecycle);
+  attachAudioGestures(audio);
 
   scene = new StudioScene(storage, locale, {
     ready: () => lifecycle.ready(),

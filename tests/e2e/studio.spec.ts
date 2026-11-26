@@ -5,6 +5,7 @@ import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
 import { ART_REFRESH } from '../../src/ui/ArtAssets.ts';
+import audioAssets from '../../src/audio/AudioAssets.json' with { type: 'json' };
 
 const saveKey = 'shelf-sort-studio';
 type Snapshot = { locale: string; cleared: number[]; volumes: { music: number; effects: number };
@@ -129,6 +130,10 @@ function mockValue<T>(page: Page, fn: (mock: MockSdk) => T): Promise<T> {
 
 test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and victory', async ({ page }) => {
   const errors: string[] = [];
+  const audioRequests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.includes('/assets/audio/')) audioRequests.push(request.url());
+  });
   page.on('pageerror', error => errors.push(error.message));
   page.on('response', response => { if (response.status() >= 400) errors.push(response.url()); });
   await page.goto('./');
@@ -173,6 +178,7 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   await expect(canvas(page, 'Level')).toBeVisible();
   expect((await readSave(page))?.active?.level).toBe(2);
   expect(errors).toEqual([]);
+  if (!audioAssets.enabled) expect(audioRequests).toEqual([]);
 });
 
 test('production loads one texture per art ID and both local font subsets before the menu', async ({ page }) => {

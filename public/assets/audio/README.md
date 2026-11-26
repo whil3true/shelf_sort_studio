@@ -1,15 +1,3 @@
-# Audio installation
+# Production audio
 
-Place your licensed files here and enable each installed entry in
-`src/audio/AudioAssetManifest.ts`.
-
-- `ui_click.ogg`
-- `item_pickup.ogg`
-- `item_place.ogg`
-- `item_invalid.ogg`
-- `match_three.ogg`
-- `shelf_reveal.ogg`
-- `level_complete.ogg`
-- `background_music.ogg`
-
-The game ships silent while these entries are disabled. See `docs/AUDIO_INTEGRATION.md`.
+Run `npm run audio:install` after adding the seven original OGG files to the root `incoming-audio/` directory. See [installation and event mapping](../../../docs/AUDIO_INTEGRATION.md) and [license records](../../../docs/AUDIO_LICENSES.md).
