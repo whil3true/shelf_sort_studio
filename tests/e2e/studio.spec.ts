@@ -423,6 +423,197 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
   await expect(canvas(page, 'Level')).toBeVisible();
 });
 
+
+type AudioProbe = {
+  decoded: string[];
+  effects: string[];
+  music?: HTMLMediaElement;
+  starts: number;
+  contexts: Set<BaseAudioContext>;
+  screens: string[];
+};
+type AudioProbeWindow = Window & { studioAudio: AudioProbe };
+
+async function observeNativeAudio(page: Page) {
+  await page.addInitScript(musicFile => {
+    const probe: AudioProbe = { decoded: [], effects: [], starts: 0, contexts: new Set(), screens: [] };
+    (window as AudioProbeWindow).studioAudio = probe;
+    const fileNames = new WeakMap<ArrayBuffer, string>();
+    const buffers = new WeakMap<AudioBuffer, string>();
+    const arrayBuffer = Response.prototype.arrayBuffer;
+    Response.prototype.arrayBuffer = async function () {
+      const data = await arrayBuffer.call(this);
+      if (this.url.includes('/assets/audio/')) fileNames.set(data, this.url.split('/').at(-1)!);
+      return data;
+    };
+    const decode = BaseAudioContext.prototype.decodeAudioData;
+    BaseAudioContext.prototype.decodeAudioData = function (data, success, failure) {
+      const file = fileNames.get(data);
+      return decode.call(this, data, success, failure).then(buffer => {
+        if (file) {
+          probe.decoded.push(file);
+          buffers.set(buffer, file);
+          probe.contexts.add(this);
+        }
+        return buffer;
+      });
+    };
+    const start = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      start.apply(this, args);
+      const file = this.buffer && buffers.get(this.buffer);
+      if (file) probe.effects.push(file);
+    };
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      if (this.src.endsWith('/' + musicFile)) {
+        probe.music = this;
+        probe.starts += 1;
+      }
+      return play.call(this);
+    };
+    new MutationObserver(records => {
+      for (const { target } of records) {
+        if (!(target instanceof HTMLCanvasElement)) continue;
+        const screen = target.getAttribute('aria-label');
+        if (screen && probe.screens.at(-1) !== screen) probe.screens.push(screen);
+      }
+    }).observe(document, { subtree: true, attributes: true, attributeFilter: ['aria-label'] });
+  }, audioAssets.files.background_music);
+}
+
+function musicState(page: Page) {
+  return page.evaluate(() => {
+    const { music, starts, screens, contexts } = (window as AudioProbeWindow).studioAudio;
+    return {
+      starts, screens, time: music?.currentTime ?? 0, paused: music?.paused ?? true,
+      attached: music?.hasAttribute('src') ?? false, loop: music?.loop ?? false,
+      error: music?.error?.code ?? null, effectsRunning: Array.from(contexts).some(context => context.state === 'running'),
+    };
+  });
+}
+
+function effectsPlayed(page: Page) {
+  return page.evaluate(() => (window as AudioProbeWindow).studioAudio.effects);
+}
+
+async function waitForEffects(page: Page) {
+  const expected = [...new Set(Object.values(audioAssets.files).filter(file => file !== audioAssets.files.background_music))];
+  await expect.poll(() => page.evaluate(() => (window as AudioProbeWindow).studioAudio.decoded.length)).toBe(expected.length);
+  expect(await page.evaluate(() => (window as AudioProbeWindow).studioAudio.decoded.sort())).toEqual(expected.sort());
+}
+
+test.describe('original audio playback', () => {
+  test.skip(!audioAssets.enabled, 'Original OGG are disabled.');
+
+  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page }) => {
+    const errors: string[] = [];
+    const ogg = new Set<string>();
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('response', response => {
+      const url = new URL(response.url());
+      if (response.status() >= 400) errors.push(`${response.status()} ${url.pathname}`);
+      if (url.pathname.endsWith('.ogg') && response.ok()) ogg.add(url.pathname.split('/').at(-1)!);
+    });
+    await mocked(page);
+    await observeNativeAudio(page);
+    await page.goto('./');
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await waitForEffects(page);
+    expect((await musicState(page)).starts).toBe(0);
+
+    await click(page, 240, 553);
+    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(0.1);
+    const before = await musicState(page);
+    expect(before).toMatchObject({ starts: 1, loop: true, paused: false, error: null });
+    await click(page, 142, 350);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    await click(page, 47, 54);
+    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await click(page, 47, 54);
+    await expect(canvas(page, 'Play')).toBeVisible();
+    const after = await musicState(page);
+    expect(after.screens.slice(-5)).toEqual(['Play', 'Choose a level', 'Level', 'Choose a level', 'Play']);
+    expect(after.starts).toBe(1);
+    expect(after.time).toBeGreaterThan(before.time);
+
+    // Seek once to make a restart from zero distinguishable from a genuine resume.
+    await page.evaluate(() => { (window as AudioProbeWindow).studioAudio.music!.currentTime = 12; });
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    await enter(page);
+    await click(page, 389, 739);
+    await expect(canvas(page, 'See the next move?')).toBeVisible();
+    await click(page, 333, 474);
+    await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
+    await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(false);
+    expect(await musicState(page)).toMatchObject({ starts: 1, attached: false, paused: true });
+    await mockValue(page, mock => {
+      mock.rewarded[0].onClose(false);
+      mock.rewarded[0].onClose(true);
+    });
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    expect(await musicState(page)).toMatchObject({ starts: 2, attached: true, paused: false });
+
+    await mockValue(page, mock => { mock.events.game_api_pause(); mock.events.game_api_pause(); });
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    await mockValue(page, mock => { mock.events.game_api_resume(); mock.events.game_api_resume(); });
+    expect(await musicState(page)).toMatchObject({ starts: 2, attached: false, paused: true });
+    await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    expect(await musicState(page)).toMatchObject({ starts: 3, error: null, paused: false });
+
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    expect(await musicState(page)).toMatchObject({ starts: 3, attached: false, paused: true });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThanOrEqual(12);
+    expect(await musicState(page)).toMatchObject({ starts: 4, error: null, paused: false });
+    expect([...ogg].sort()).toEqual([...new Set(Object.values(audioAssets.files))].sort());
+    expect(errors).toEqual([]);
+  });
+
+  test('real Web Audio plays each assigned effect once, including match, reveal and victory', async ({ page }) => {
+    const files = audioAssets.files;
+    await observeNativeAudio(page);
+    await page.goto('./');
+    await waitForEffects(page);
+    await enter(page);
+    await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+    const menuSounds = await effectsPlayed(page);
+    expect(menuSounds).toContain(files.ui_click);
+    const level = LEVELS[0];
+    const move = level.solution[0];
+    const occupied = level.board.flatMap((shelf, i) => shelf.front.flatMap((good, j) =>
+      good ? [{ shelf: i, slot: j }] : [])).find(at => at.shelf !== move.from.shelf)!;
+    await inputMove(page, { from: move.from, to: occupied }, 'drag');
+    expect((await effectsPlayed(page)).slice(menuSounds.length)).toEqual([files.item_pickup, files.item_invalid]);
+
+    const start = (await effectsPlayed(page)).length;
+    await completeFirst(page);
+    const moveSounds = [files.item_pickup, files.item_place];
+    await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual([
+      ...moveSounds, ...moveSounds, ...moveSounds, files.match_three, ...moveSounds, files.match_three, files.level_complete,
+    ]);
+
+    await page.evaluate(key => localStorage.setItem(key, JSON.stringify({
+      version: 1, locale: 'en', cleared: Array.from({ length: 9 }, (_, i) => i + 1),
+      active: { level: 10, moves: [] },
+    })), saveKey);
+    await page.reload();
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await waitForEffects(page);
+    await click(page, 240, 621);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+    const { board, solution: [first, reveal] } = LEVELS[9];
+    await inputMove(page, first, 'click', board.length);
+    await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([first]);
+    const beforeReveal = (await effectsPlayed(page)).length;
+    await inputMove(page, reveal, 'click', board.length);
+    await expect.poll(async () => (await effectsPlayed(page)).slice(beforeReveal)).toEqual([...moveSounds, files.shelf_reveal]);
+  });
+});
+
 test.describe('high-density canvas', () => {
   test.use({ deviceScaleFactor: 2 });
   test('full-viewport canvas keeps the portrait controls reachable without scrolling or zooming', async ({ page }) => {
@@ -484,10 +675,15 @@ test.describe('touch emulation', () => {
   test.use({ hasTouch: true, deviceScaleFactor: 2 });
   test('taps and native drag place goods', async ({ page, browserName }) => {
     if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
+    if (audioAssets.enabled) await observeNativeAudio(page);
     await page.goto('./');
     await expect(canvas(page, 'Play')).toBeVisible();
     await tap(page, 240, 553);
     await expect(canvas(page, 'Choose a level')).toBeVisible();
+    if (audioAssets.enabled) {
+      await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(0.1);
+      expect((await musicState(page)).starts).toBe(1);
+    }
     await tap(page, 142, 350);
     await expect(canvas(page, 'Level')).toBeVisible();
     const move = LEVELS[0].solution[0];

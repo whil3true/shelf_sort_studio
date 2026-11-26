@@ -1,6 +1,6 @@
 # Источники и лицензии аудио
 
-Реестр описывает семь оригинальных файлов, ожидаемых от пользователя. Данные об авторстве, лицензиях и контрольных суммах взяты из текстовой документации веток `dev` обоих доноров.
+В `public/assets/audio/` установлены семь оригинальных файлов из этого реестра. Данные об авторстве, лицензиях и контрольных суммах взяты из текстовой документации веток `dev` обоих доноров.
 
 | Файл | Автор и источник | Лицензия |
 | --- | --- | --- |
@@ -14,4 +14,4 @@
 
 Сведения о лицензии и публикациях, по которым Cozy Gallery сверяла эффекты, приведены в [реестре Cozy Gallery](https://github.com/whil3true/pairs_and_paths/blob/dev/docs/AUDIO_LICENSES.md). [Реестр Block Workshop](https://github.com/whil3true/block_workshop/blob/dev/docs/AUDIO_LICENSES.md) документирует тот же набор. Текст лицензии доступен на сайте [Creative Commons](https://creativecommons.org/publicdomain/zero/1.0/).
 
-[Ожидаемые SHA-256](audio.sha256.json) для всех семи файлов совпадают в [контрольных суммах Cozy Gallery](https://github.com/whil3true/pairs_and_paths/blob/dev/docs/audit/production-assets.sha256.json) и [контрольных суммах Block Workshop](https://github.com/whil3true/block_workshop/blob/dev/docs/assets.sha256.json). Хеши описывают версии из донорских сборок. Shelf Sort Studio сверит загруженные файлы при выполнении `npm run audio:install`.
+[Ожидаемые SHA-256](audio.sha256.json) для всех семи файлов совпадают в [контрольных суммах Cozy Gallery](https://github.com/whil3true/pairs_and_paths/blob/dev/docs/audit/production-assets.sha256.json) и [контрольных суммах Block Workshop](https://github.com/whil3true/block_workshop/blob/dev/docs/assets.sha256.json). Установочный скрипт сверил с этими значениями все семь загруженных файлов. Проверка релиза сверяет те же SHA-256 в production-сборке и Yandex ZIP.

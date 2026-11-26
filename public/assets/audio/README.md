@@ -1,3 +1,3 @@
 # Production audio
 
-Run `npm run audio:install` after adding the seven original OGG files to the root `incoming-audio/` directory. See [installation and event mapping](../../../docs/AUDIO_INTEGRATION.md) and [license records](../../../docs/AUDIO_LICENSES.md).
+The seven original OGG files in this directory match the published donor SHA-256 registry. See the [event map](../../../docs/AUDIO_INTEGRATION.md) and [license records](../../../docs/AUDIO_LICENSES.md). Run `npm run audio:verify` from the repository root to verify the installed files.

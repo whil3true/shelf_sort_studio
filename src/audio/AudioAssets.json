@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "files": {
     "background_music": "forget_me_not_in_f_major_looped.ogg",
     "ui_click": "click_003.ogg",

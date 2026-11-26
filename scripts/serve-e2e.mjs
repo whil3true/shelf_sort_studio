@@ -15,6 +15,22 @@ createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
-  res.writeHead(200, { 'Content-Type': types[extname(name)] ?? 'application/octet-stream' });
+  const type = types[extname(name)] ?? 'application/octet-stream';
+  const { size } = statSync(name);
+  if (type === 'audio/ogg' && req.headers.range) {
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+    const start = range?.[1] ? Number(range[1]) : Math.max(0, size - Number(range?.[2] ?? 0));
+    const end = range?.[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start > end || start >= size) {
+      res.writeHead(416, { 'Content-Range': `bytes */${size}` }).end();
+      return;
+    }
+    res.writeHead(206, { 'Content-Type': type, 'Content-Length': end - start + 1,
+      'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${size}` });
+    createReadStream(name, { start, end }).pipe(res);
+    return;
+  }
+  const headers = { 'Content-Type': type, 'Content-Length': size };
+  res.writeHead(200, type === 'audio/ogg' ? { ...headers, 'Accept-Ranges': 'bytes' } : headers);
   createReadStream(name).pipe(res);
 }).listen(4175, '127.0.0.1');
