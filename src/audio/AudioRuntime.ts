@@ -25,6 +25,8 @@ export class BrowserAudioOutput implements AudioOutput {
   private paused = false;
 
   private readonly pathFor: typeof audioPath;
+  // Android Chrome's desktop site mode can omit Android from the user agent.
+  private readonly releaseSourceOnPause = /\b(?:Android|Chrome|Chromium)\b/i.test(navigator.userAgent);
 
   constructor(pathFor: typeof audioPath = audioPath) {
     this.pathFor = pathFor;
@@ -207,17 +209,22 @@ export class BrowserAudioOutput implements AudioOutput {
   private pauseMusic(): void {
     const player = this.music;
     if (!player) return;
+    try {
+      if (this.releaseSourceOnPause) this.releaseMusicElement(player);
+      else player.pause(); // Keep the loaded decoder and its position in WebKit and desktop Firefox.
+    } catch { /* Some mobile browsers interrupt media teardown. */ }
+    this.clearMediaSession();
+  }
+
+  private releaseMusicElement(player: HTMLAudioElement): void {
     if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
       this.musicPosition = player.currentTime;
     }
     this.waitingForMusicMetadata = false;
     this.music = null;
-    try {
-      player.pause();
-      player.removeAttribute('src');
-      player.load();
-    } catch { /* Some mobile browsers interrupt media teardown. */ }
-    this.clearMediaSession();
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
   }
 
   private clearMediaSession(): void {

@@ -224,7 +224,7 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
   mockGlobal(t, 'Audio', Player);
   const clearPosition = t.mock.fn();
   const mediaSession = { playbackState: 'playing', metadata: { title: 'Track' }, setPositionState: clearPosition };
-  mockGlobal(t, 'navigator', { mediaSession, userAgent: 'Desktop site' });
+  mockGlobal(t, 'navigator', { mediaSession, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/144.0.0.0' });
   const audio = new AudioRuntime(new BrowserAudioOutput(event => event === 'background_music' ? 'mock-music' : null),
     { music: 0.6, effects: 0.5 });
   const { platform, events, ads } = platformFixture();

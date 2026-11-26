@@ -508,7 +508,9 @@ async function waitForEffects(page: Page) {
 test.describe('original audio playback', () => {
   test.skip(!audioAssets.enabled, 'Original OGG are disabled.');
 
-  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page }) => {
+  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page, browserName }) => {
+    // Chromium also covers Chrome Android's desktop site mode, which has a desktop UA.
+    const keepsSource = browserName !== 'chromium';
     const errors: string[] = [];
     const ogg = new Set<string>();
     page.on('pageerror', error => errors.push(error.message));
@@ -558,7 +560,7 @@ test.describe('original audio playback', () => {
     await click(page, 333, 474);
     await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(false);
-    expect(await musicState(page)).toMatchObject({ starts: 1, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 1, attached: keepsSource, paused: true });
     await mockValue(page, mock => {
       mock.rewarded[0].onClose(false);
       mock.rewarded[0].onClose(true);
@@ -569,13 +571,13 @@ test.describe('original audio playback', () => {
     await mockValue(page, mock => { mock.events.game_api_pause(); mock.events.game_api_pause(); });
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
     await mockValue(page, mock => { mock.events.game_api_resume(); mock.events.game_api_resume(); });
-    expect(await musicState(page)).toMatchObject({ starts: 2, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 2, attached: keepsSource, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 3, error: null, paused: false });
 
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    expect(await musicState(page)).toMatchObject({ starts: 3, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 3, attached: keepsSource, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 4, error: null, paused: false });
@@ -587,7 +589,7 @@ test.describe('original audio playback', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       window.dispatchEvent(new Event('blur'));
     });
-    expect(await musicState(page)).toMatchObject({ starts: 4, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 4, attached: keepsSource, paused: true });
     await page.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, value: false });
       document.dispatchEvent(new Event('visibilitychange'));
