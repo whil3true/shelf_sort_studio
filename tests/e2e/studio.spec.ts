@@ -490,7 +490,7 @@ function musicState(page: Page) {
     return {
       starts, screens, time: music?.currentTime ?? 0, paused: music?.paused ?? true,
       attached: music?.hasAttribute('src') ?? false, loop: music?.loop ?? false,
-      error: music?.error?.code ?? null, effectsRunning: Array.from(contexts).some(context => context.state === 'running'),
+      error: music?.error?.message ?? null, effectsRunning: Array.from(contexts).some(context => context.state === 'running'),
     };
   });
 }

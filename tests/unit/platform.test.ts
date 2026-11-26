@@ -198,7 +198,9 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
     loop = false;
     volume = 0;
     currentTime = 0;
+    readyState = 0;
     starts = 0;
+    metadata = () => {};
     released = false;
     constructor() { players.push(this); }
     play() {
@@ -211,6 +213,10 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
     }
     pause() { this.paused = true; }
     removeAttribute(name: string) { assert.equal(name, 'src'); this.released = true; }
+    addEventListener(name: string, listener: () => void) {
+      assert.equal(name, 'loadedmetadata');
+      this.metadata = () => { this.readyState = 1; listener(); };
+    }
     load() {}
   }
 
@@ -255,16 +261,24 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
   assert.equal(players.length, 1);
   lifecycle.pauseFor('hidden', false);
   assert.equal(players.length, 2);
-  assert.equal(players[1].currentTime, 14);
-  assert.equal(players[1].starts, 1);
-  assert.equal(players[1].volume, 0.6);
+  assert.equal(players[1].starts, 0);
+  lifecycle.pauseFor('hidden', true);
+  players[1].metadata();
+  assert.equal(players[1].starts, 0);
+  lifecycle.pauseFor('hidden', false);
+  assert.equal(players.length, 3);
+  players[2].metadata();
+  assert.equal(players[2].currentTime, 14);
+  assert.equal(players[2].starts, 1);
+  assert.equal(players[2].volume, 0.6);
 
   audio.setVolumes({ music: 0, effects: 1 });
-  assert.equal(players[1].released, true);
+  assert.equal(players[2].released, true);
   audio.setVolumes({ music: 0.25, effects: 1 });
-  assert.equal(players.length, 3);
-  assert.equal(players[2].volume, 0.25);
-  assert.equal(players[2].currentTime, 14);
+  assert.equal(players.length, 4);
+  players[3].metadata();
+  assert.equal(players[3].volume, 0.25);
+  assert.equal(players[3].currentTime, 14);
 });
 
 test('effects preload shared resources once, respect their own volume and stop across pauses', async t => {

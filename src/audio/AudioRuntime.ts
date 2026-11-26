@@ -12,6 +12,7 @@ export class BrowserAudioOutput implements AudioOutput {
   private music: HTMLAudioElement | null = null;
   private musicPosition = 0;
   private musicPlayPending = false;
+  private waitingForMusicMetadata = false;
   private context: AudioContext | null = null;
   private gain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
@@ -108,11 +109,24 @@ export class BrowserAudioOutput implements AudioOutput {
         player.loop = true;
         player.preload = 'auto';
         this.music = player;
-        if (this.musicPosition > 0) player.currentTime = this.musicPosition;
+        const position = this.musicPosition;
+        if (position > 0 && player.readyState === 0) {
+          // WebKit can discard a seek made before the new source has metadata.
+          this.waitingForMusicMetadata = true;
+          player.addEventListener('loadedmetadata', () => {
+            if (this.music !== player) return;
+            this.restoreMusicPosition(player, position);
+            this.waitingForMusicMetadata = false;
+            this.syncMusic();
+          }, { once: true });
+          player.load();
+        } else if (position > 0) {
+          this.restoreMusicPosition(player, position);
+        }
       }
       const player = this.music;
       player.volume = this.volumes.music;
-      if (this.musicPlayPending || !player.paused || player.error) return;
+      if (this.waitingForMusicMetadata || this.musicPlayPending || !player.paused || player.error) return;
       this.musicPlayPending = true;
       void player.play().catch(() => {}).finally(() => {
         if (this.music === player) this.musicPlayPending = false;
@@ -123,10 +137,17 @@ export class BrowserAudioOutput implements AudioOutput {
     }
   }
 
+  private restoreMusicPosition(player: HTMLAudioElement, position: number): void {
+    try { player.currentTime = position; } catch { /* Leave unseekable media playable. */ }
+  }
+
   private releaseMusic(): void {
     const player = this.music;
     if (!player) return;
-    if (Number.isFinite(player.currentTime)) this.musicPosition = player.currentTime;
+    if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
+      this.musicPosition = player.currentTime;
+    }
+    this.waitingForMusicMetadata = false;
     this.music = null;
     this.musicPlayPending = false;
     try {
