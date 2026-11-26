@@ -508,7 +508,12 @@ async function waitForEffects(page: Page) {
 test.describe('original audio playback', () => {
   test.skip(!audioAssets.enabled, 'Original OGG are disabled.');
 
-  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page }) => {
+  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page, browserName }) => {
+    // Exercise Android source teardown on Chromium. Other engines resume the same media element.
+    const android = browserName === 'chromium';
+    if (android) await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'userAgent', { value: navigator.userAgent + ' Android' });
+    });
     const errors: string[] = [];
     const ogg = new Set<string>();
     page.on('pageerror', error => errors.push(error.message));
@@ -538,7 +543,7 @@ test.describe('original audio playback', () => {
     const after = await musicState(page);
     expect(after.screens.slice(-5)).toEqual(['Play', 'Choose a level', 'Level', 'Choose a level', 'Play']);
     expect(after.starts).toBe(1);
-    expect(after.time).toBeGreaterThan(before.time);
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(before.time);
 
     // Seek once to make a restart from zero distinguishable from a genuine resume.
     await page.evaluate(() => { window.studioAudio.music!.currentTime = 12; });
@@ -549,7 +554,7 @@ test.describe('original audio playback', () => {
     await click(page, 333, 474);
     await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(false);
-    expect(await musicState(page)).toMatchObject({ starts: 1, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 1, attached: !android, paused: true });
     await mockValue(page, mock => {
       mock.rewarded[0].onClose(false);
       mock.rewarded[0].onClose(true);
@@ -560,13 +565,13 @@ test.describe('original audio playback', () => {
     await mockValue(page, mock => { mock.events.game_api_pause(); mock.events.game_api_pause(); });
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
     await mockValue(page, mock => { mock.events.game_api_resume(); mock.events.game_api_resume(); });
-    expect(await musicState(page)).toMatchObject({ starts: 2, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 2, attached: !android, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 3, error: null, paused: false });
 
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    expect(await musicState(page)).toMatchObject({ starts: 3, attached: false, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 3, attached: !android, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 4, error: null, paused: false });

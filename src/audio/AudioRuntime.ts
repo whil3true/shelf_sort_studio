@@ -11,7 +11,7 @@ export interface AudioOutput {
 export class BrowserAudioOutput implements AudioOutput {
   private music: HTMLAudioElement | null = null;
   private musicPosition = 0;
-  private musicPlayPending = false;
+  private pendingMusicPlay: Promise<void> | null = null;
   private waitingForMusicMetadata = false;
   private context: AudioContext | null = null;
   private gain: GainNode | null = null;
@@ -22,6 +22,7 @@ export class BrowserAudioOutput implements AudioOutput {
   private paused = false;
 
   private readonly pathFor: typeof audioPath;
+  private readonly releaseSourceOnPause = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
 
   constructor(pathFor: typeof audioPath = audioPath) {
     this.pathFor = pathFor;
@@ -100,7 +101,7 @@ export class BrowserAudioOutput implements AudioOutput {
     const path = this.pathFor('background_music');
     if (!path || !this.unlocked) return;
     if (this.paused || !this.volumes.music) {
-      this.releaseMusic();
+      this.pauseMusic();
       return;
     }
     try {
@@ -126,35 +127,38 @@ export class BrowserAudioOutput implements AudioOutput {
       }
       const player = this.music;
       player.volume = this.volumes.music;
-      if (this.waitingForMusicMetadata || this.musicPlayPending || !player.paused || player.error) return;
-      this.musicPlayPending = true;
-      void player.play().catch(() => {}).finally(() => {
-        if (this.music === player) this.musicPlayPending = false;
+      if (this.waitingForMusicMetadata || this.pendingMusicPlay || !player.paused || player.error) return;
+      const playback = player.play();
+      this.pendingMusicPlay = playback;
+      void playback.catch(() => {}).finally(() => {
+        if (this.pendingMusicPlay === playback) this.pendingMusicPlay = null;
       });
-    } catch {
-      // A later trusted gesture can retry a rejected play().
-      this.musicPlayPending = false;
-    }
+    } catch { /* A later trusted gesture can retry a rejected play(). */ }
   }
 
   private restoreMusicPosition(player: HTMLAudioElement, position: number): void {
     try { player.currentTime = position; } catch { /* Leave unseekable media playable. */ }
   }
 
-  private releaseMusic(): void {
+  private pauseMusic(): void {
     const player = this.music;
     if (!player) return;
-    if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
-      this.musicPosition = player.currentTime;
+    this.pendingMusicPlay = null;
+    // Keep the loaded source where it can resume in place. Android needs the
+    // source released to dismiss its system media controls while paused.
+    if (this.releaseSourceOnPause) {
+      if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
+        this.musicPosition = player.currentTime;
+      }
+      this.waitingForMusicMetadata = false;
+      this.music = null;
     }
-    this.waitingForMusicMetadata = false;
-    this.music = null;
-    this.musicPlayPending = false;
     try {
       player.pause();
-      // Releasing the source also releases Android's native media controls.
-      player.removeAttribute('src');
-      player.load();
+      if (this.releaseSourceOnPause) {
+        player.removeAttribute('src');
+        player.load();
+      }
     } catch { /* Some mobile browsers interrupt media teardown. */ }
     try {
       if (navigator.mediaSession) {
