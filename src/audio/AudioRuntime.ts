@@ -11,12 +11,13 @@ export interface AudioOutput {
 export class BrowserAudioOutput implements AudioOutput {
   private music: HTMLAudioElement | null = null;
   private musicPosition = 0;
-  private pendingMusicPlay: Promise<void> | null = null;
   private waitingForMusicMetadata = false;
   private context: AudioContext | null = null;
   private gain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
+  private readonly fallbackEffects = new Map<string, HTMLAudioElement>();
   private readonly voices = new Set<AudioBufferSourceNode>();
+  private readonly lastEffectAt = new Map<AudioEffect, number>();
   private effectsResume: Promise<void> | null = null;
   private effectsPauseRevision = 0;
   private volumes: Readonly<Volumes> = { music: 0, effects: 0 };
@@ -24,7 +25,8 @@ export class BrowserAudioOutput implements AudioOutput {
   private paused = false;
 
   private readonly pathFor: typeof audioPath;
-  private readonly releaseSourceOnPause = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  // Android Chrome's desktop site mode can omit Android from the user agent.
+  private readonly releaseSourceOnPause = /\bAndroid\b|(?:Chrome|Chromium)\//i.test(navigator.userAgent);
 
   constructor(pathFor: typeof audioPath = audioPath) {
     this.pathFor = pathFor;
@@ -37,27 +39,39 @@ export class BrowserAudioOutput implements AudioOutput {
     try {
       const browser = globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext };
       const Constructor = browser.AudioContext ?? browser.webkitAudioContext;
-      if (!Constructor) return;
-      const context = new Constructor();
-      const gain = context.createGain();
-      gain.gain.value = this.volumes.effects;
-      gain.connect(context.destination);
-      this.context = context;
-      this.gain = gain;
-      for (const path of paths) {
-        if (!path) continue;
-        void fetch(path).then(response => response.ok ? response.arrayBuffer() : null)
-          .then(bytes => bytes && context.decodeAudioData(bytes))
-          .then(buffer => { if (buffer) this.buffers.set(path, buffer); })
-          .catch(() => {});
+      if (Constructor) {
+        const context = new Constructor();
+        const gain = context.createGain();
+        gain.gain.value = this.volumes.effects;
+        gain.connect(context.destination);
+        this.context = context;
+        this.gain = gain;
       }
-    } catch { /* An unavailable audio device leaves the game playable. */ }
+    } catch { /* Fall back to preloaded media when Web Audio is unavailable. */ }
+
+    for (const path of paths) {
+      if (!path) continue;
+      const context = this.context;
+      if (!context) {
+        this.prepareFallback(path);
+        continue;
+      }
+      void fetch(path).then(response => {
+        if (!response.ok) throw new Error(`Cannot load sound effect: ${path}`);
+        return response.arrayBuffer();
+      }).then(bytes => context.decodeAudioData(bytes))
+        .then(buffer => this.buffers.set(path, buffer))
+        .catch(() => this.prepareFallback(path));
+    }
   }
 
   unlock(): void {
     if (this.paused) return;
     this.unlocked = true;
-    if (this.context?.state !== 'running') this.resumeEffects();
+    // Touch activation can arrive on release while the pointerdown resume is still pending.
+    if (this.context?.state !== 'running' && (!this.effectsResume || navigator.userActivation?.isActive !== false)) {
+      this.resumeEffects();
+    }
     this.syncMusic();
   }
 
@@ -65,6 +79,7 @@ export class BrowserAudioOutput implements AudioOutput {
     const musicChanged = volumes.music !== this.volumes.music;
     this.volumes = { ...volumes };
     if (this.gain) this.gain.gain.value = volumes.effects;
+    for (const player of this.fallbackEffects.values()) player.volume = volumes.effects;
     if (musicChanged) this.syncMusic();
   }
 
@@ -74,8 +89,10 @@ export class BrowserAudioOutput implements AudioOutput {
     if (paused) {
       this.effectsPauseRevision++;
       this.effectsResume = null;
+      this.lastEffectAt.clear();
       for (const voice of this.voices) voice.stop();
       this.voices.clear();
+      for (const player of this.fallbackEffects.values()) player.pause();
       void this.context?.suspend().catch(() => {});
     } else if (this.unlocked) {
       // Queue resume even when a no-fill callback arrives before suspend settles.
@@ -88,7 +105,17 @@ export class BrowserAudioOutput implements AudioOutput {
     const path = this.pathFor(effect);
     if (!path || !this.unlocked || this.paused || !this.volumes.effects) return;
     const buffer = this.buffers.get(path);
-    if (!buffer) return;
+    const fallback = this.fallbackEffects.get(path);
+    if (!buffer && (!fallback || fallback.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA || !fallback.paused)) return;
+
+    const now = performance.now();
+    const previous = this.lastEffectAt.get(effect);
+    if (previous !== undefined && now - previous < 50) return;
+    this.lastEffectAt.set(effect, now);
+    if (!buffer) {
+      if (fallback) this.playFallback(fallback);
+      return;
+    }
     if (this.context?.state === 'running') {
       this.startEffect(buffer);
       return;
@@ -97,18 +124,35 @@ export class BrowserAudioOutput implements AudioOutput {
     // A decoded clip can follow a gesture or ad resume by one audio startup interval.
     // Drop it if resume is slow or another pause supersedes the event.
     const revision = this.effectsPauseRevision;
-    const deadline = performance.now() + 100;
+    const deadline = now + 100;
     void this.effectsResume?.then(() => {
       if (revision === this.effectsPauseRevision && performance.now() <= deadline) this.startEffect(buffer);
     }, () => {});
   }
 
   private resumeEffects(): void {
-    if (!this.context || this.effectsResume) return;
+    if (!this.context) return;
     const resume = this.context.resume();
     this.effectsResume = resume;
     const clear = () => { if (this.effectsResume === resume) this.effectsResume = null; };
     void resume.then(clear, clear);
+  }
+
+  private prepareFallback(path: string): void {
+    try {
+      const player = new Audio(path);
+      player.preload = 'auto';
+      player.volume = this.volumes.effects;
+      player.load();
+      this.fallbackEffects.set(path, player);
+    } catch { /* Unsupported media leaves the game playable. */ }
+  }
+
+  private playFallback(player: HTMLAudioElement): void {
+    try {
+      player.currentTime = 0;
+      void player.play().catch(() => {});
+    } catch { /* A later gesture may be allowed to play. */ }
   }
 
   private startEffect(buffer: AudioBuffer): void {
@@ -153,12 +197,8 @@ export class BrowserAudioOutput implements AudioOutput {
       }
       const player = this.music;
       player.volume = this.volumes.music;
-      if (this.waitingForMusicMetadata || this.pendingMusicPlay || !player.paused || player.error) return;
-      const playback = player.play();
-      this.pendingMusicPlay = playback;
-      void playback.catch(() => {}).finally(() => {
-        if (this.pendingMusicPlay === playback) this.pendingMusicPlay = null;
-      });
+      if (this.waitingForMusicMetadata || !player.paused || player.error) return;
+      void player.play().catch(() => {});
     } catch { /* A later trusted gesture can retry a rejected play(). */ }
   }
 
@@ -169,32 +209,34 @@ export class BrowserAudioOutput implements AudioOutput {
   private pauseMusic(): void {
     const player = this.music;
     if (!player) return;
-    this.pendingMusicPlay = null;
-    // Keep the loaded source where it can resume in place. Android needs the
-    // source released to dismiss its system media controls while paused.
-    if (this.releaseSourceOnPause) {
-      if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
-        this.musicPosition = player.currentTime;
-      }
-      this.waitingForMusicMetadata = false;
-      this.music = null;
-    }
     try {
-      player.pause();
-      if (this.releaseSourceOnPause) {
-        player.removeAttribute('src');
-        player.load();
-      }
+      if (this.releaseSourceOnPause) this.releaseMusicElement(player);
+      else player.pause(); // Keep the loaded decoder and its position in WebKit and desktop Firefox.
     } catch { /* Some mobile browsers interrupt media teardown. */ }
+    this.clearMediaSession();
+  }
+
+  private releaseMusicElement(player: HTMLAudioElement): void {
+    if (!this.waitingForMusicMetadata && Number.isFinite(player.currentTime)) {
+      this.musicPosition = player.currentTime;
+    }
+    this.waitingForMusicMetadata = false;
+    this.music = null;
+    player.pause();
+    player.removeAttribute('src');
+    player.load();
+  }
+
+  private clearMediaSession(): void {
     try {
-      if (navigator.mediaSession) {
-        navigator.mediaSession.playbackState = 'none';
-        navigator.mediaSession.metadata = null;
-      }
+      const session = navigator.mediaSession;
+      if (!session) return;
+      session.playbackState = 'none';
+      session.metadata = null;
+      session.setPositionState?.();
     } catch { /* Media Session is optional. */ }
   }
 }
-
 export class AudioRuntime {
   private readonly output: AudioOutput;
   private readonly pauseReasons = new Set<string>();
@@ -215,15 +257,4 @@ export class AudioRuntime {
     const isPaused = this.pauseReasons.size > 0;
     if (wasPaused !== isPaused) this.output.setPaused(isPaused);
   }
-}
-
-export function attachAudioGestures(audio: AudioRuntime): () => void {
-  const unlock = (event: Event) => {
-    if (!event.isTrusted || document.hidden || (event instanceof MouseEvent && event.button !== 0)) return;
-    audio.unlock();
-  };
-  // Android may grant activation only on release. Retrying unlock emits no SFX.
-  const events = ['pointerdown', 'pointerup', 'touchend', 'keydown'] as const;
-  for (const event of events) window.addEventListener(event, unlock, { capture: true, passive: true });
-  return () => { for (const event of events) window.removeEventListener(event, unlock, true); };
 }
