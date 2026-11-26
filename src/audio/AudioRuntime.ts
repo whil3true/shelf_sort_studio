@@ -26,7 +26,7 @@ export class BrowserAudioOutput implements AudioOutput {
 
   private readonly pathFor: typeof audioPath;
   // Android Chrome's desktop site mode can omit Android from the user agent.
-  private readonly releaseSourceOnPause = /\b(?:Android|Chrome|Chromium)\b/i.test(navigator.userAgent);
+  private readonly releaseSourceOnPause = /\bAndroid\b|(?:Chrome|Chromium)\//i.test(navigator.userAgent);
 
   constructor(pathFor: typeof audioPath = audioPath) {
     this.pathFor = pathFor;
