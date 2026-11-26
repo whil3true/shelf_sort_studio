@@ -6,6 +6,7 @@ import type { SearchResult } from '../game/Solver.ts';
 import type { AudioEffect } from '../audio/AudioAssetManifest.ts';
 import type { Storage, Locale } from '../platform/Storage.ts';
 import { ART_REFRESH, artPaths, type ArtId } from './ArtAssets';
+import { boardAnimationStages } from './BoardAnimation.ts';
 import { CHAPTERS, word, type TextKey } from './Locale';
 import { CONTROL_ICONS, StudioView, mutedInk, type Icon } from './StudioView';
 import { configureCamera } from './viewport';
@@ -517,12 +518,13 @@ export class StudioScene extends Phaser.Scene {
       if (move.to.shelf === index) front[move.to.slot] = landed;
       return { ...shelf, front };
     });
-    this.animateBoard(result.events);
+    this.animateBoard(boardAnimationStages(result.events));
     return true;
   }
 
-  private animateBoard(remaining: readonly BoardEvent[]) {
-    if (!remaining.length) {
+  private animateBoard(stages: ReturnType<typeof boardAnimationStages>) {
+    const stage = stages.next();
+    if (stage.done) {
       this.beforeAnimation = null;
       this.motion = null;
       this.animation = false;
@@ -531,22 +533,16 @@ export class StudioScene extends Phaser.Scene {
       return;
     }
 
-    // Each shelf can reveal and match repeatedly during a single move.
-    const next = new Map<number, BoardEvent>();
-    for (const event of remaining) {
-      if (!next.has(event.shelf)) next.set(event.shelf, event);
-    }
-    const matches = [...next.values()].filter(event => event.type === 'match');
-    const events = matches.length ? new Map(matches.map(event => [event.shelf, event])) : next;
+    const { events, matching, effect } = stage.value;
     const motion: BoardMotion = { events, progress: 0, render: [] };
     this.motion = motion;
     this.draw();
 
-    this.host.audio(matches.length ? 'match_three' : 'shelf_reveal');
+    if (effect) this.host.audio(effect);
 
     this.tweens.addCounter({
-      from: 0, to: 1, duration: matches.length ? 155 : 210,
-      ease: matches.length ? 'Cubic.In' : 'Sine.InOut',
+      from: 0, to: 1, duration: matching ? 155 : 210,
+      ease: matching ? 'Cubic.In' : 'Sine.InOut',
       onUpdate: tween => {
         motion.progress = tween.getValue() ?? 0;
         motion.render.forEach(render => render(motion.progress));
@@ -559,7 +555,7 @@ export class StudioScene extends Phaser.Scene {
           const [front, ...stock] = shelf.stock;
           return { front, stock };
         });
-        this.animateBoard(remaining.filter(event => events.get(event.shelf) !== event));
+        this.animateBoard(stages);
       },
     });
   }

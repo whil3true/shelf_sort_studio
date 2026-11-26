@@ -427,6 +427,7 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
 type AudioProbe = {
   decoded: string[];
   effects: string[];
+  sharedClipOverlaps: number;
   music?: HTMLMediaElement;
   starts: number;
   contexts: Set<BaseAudioContext>;
@@ -437,8 +438,10 @@ declare global {
 }
 
 async function observeNativeAudio(page: Page) {
-  await page.addInitScript(musicFile => {
-    const probe: AudioProbe = { decoded: [], effects: [], starts: 0, contexts: new Set(), screens: [] };
+  await page.addInitScript(({ musicFile, sharedFile }) => {
+    const probe: AudioProbe = {
+      decoded: [], effects: [], sharedClipOverlaps: 0, starts: 0, contexts: new Set(), screens: [],
+    };
     window.studioAudio = probe;
     const fileNames = new WeakMap<ArrayBuffer, string>();
     const buffers = new WeakMap<AudioBuffer, string>();
@@ -460,11 +463,22 @@ async function observeNativeAudio(page: Page) {
         return buffer;
       });
     };
+    let sharedClip: { voice: AudioBufferSourceNode; endsAt: number } | undefined;
     const start = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (...args) {
       start.apply(this, args);
       const file = this.buffer && buffers.get(this.buffer);
       if (file) probe.effects.push(file);
+      if (file === sharedFile && this.buffer) {
+        const now = this.context.currentTime;
+        if (sharedClip && sharedClip.endsAt > now) probe.sharedClipOverlaps++;
+        sharedClip = { voice: this, endsAt: now + this.buffer.duration };
+      }
+    };
+    const stop = AudioBufferSourceNode.prototype.stop;
+    AudioBufferSourceNode.prototype.stop = function (...args) {
+      stop.apply(this, args);
+      if (sharedClip?.voice === this) sharedClip.endsAt = args[0] ?? this.context.currentTime;
     };
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
@@ -481,7 +495,7 @@ async function observeNativeAudio(page: Page) {
         if (screen && probe.screens.at(-1) !== screen) probe.screens.push(screen);
       }
     }).observe(document, { subtree: true, attributes: true, attributeFilter: ['aria-label'] });
-  }, audioAssets.files.background_music);
+  }, { musicFile: audioAssets.files.background_music, sharedFile: audioAssets.files.shelf_reveal });
 }
 
 function musicState(page: Page) {
@@ -626,8 +640,9 @@ test.describe('original audio playback', () => {
     await expect.poll(() => effectsPlayed(page)).toEqual([audioAssets.files.ui_click]);
   });
 
-  test('real Web Audio plays each assigned effect once, including match, reveal and victory', async ({ page }) => {
+  test('each board action, control and victory plays exactly its effects with real Web Audio', async ({ page }) => {
     const files = audioAssets.files;
+    await mocked(page);
     await observeNativeAudio(page);
     await page.goto('./');
     await expect(canvas(page, 'Play')).toBeVisible();
@@ -644,29 +659,119 @@ test.describe('original audio playback', () => {
     await inputMove(page, { from: move.from, to: occupied }, 'drag');
     expect((await effectsPlayed(page)).slice(menuSounds.length)).toEqual([files.item_pickup, files.item_invalid]);
 
-    const start = (await effectsPlayed(page)).length;
-    await completeFirst(page);
+    const beforeCancel = (await effectsPlayed(page)).length;
+    const from = slotPoint(move.from, level.board.length);
+    const to = slotPoint(move.to, level.board.length);
+    const origin = await point(page, from.x, from.y);
+    const target = await point(page, to.x, to.y);
+    await page.mouse.move(origin.x, origin.y);
+    await page.mouse.down();
+    await page.mouse.move(target.x, target.y, { steps: 6 });
+    await canvas(page, 'Level').dispatchEvent('pointercancel', { bubbles: true });
+    await page.mouse.up();
+    expect((await readSave(page))?.active?.moves).toEqual([]);
+    expect((await effectsPlayed(page)).slice(beforeCancel)).toEqual([files.item_pickup]);
+
+    const beforeControls = (await effectsPlayed(page)).length;
     const moveSounds = [files.item_pickup, files.item_place];
-    await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual([
-      ...moveSounds, ...moveSounds, ...moveSounds, files.match_three, ...moveSounds, files.match_three, files.level_complete,
+    await inputMove(page, move, 'drag');
+    expect((await effectsPlayed(page)).slice(beforeControls)).toEqual(moveSounds);
+    await click(page, 91, 739);
+    expect((await readSave(page))?.active?.moves).toEqual([]);
+    await inputMove(page, move, 'click');
+    await click(page, 240, 739);
+    await expect(canvas(page, 'Restart this level?')).toBeVisible();
+    await click(page, 333, 474);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    expect((await readSave(page))?.active?.moves).toEqual([]);
+    expect((await effectsPlayed(page)).slice(beforeControls)).toEqual([
+      ...moveSounds, files.ui_click, ...moveSounds, files.ui_click, files.ui_click,
     ]);
 
-    await page.evaluate(key => localStorage.setItem(key, JSON.stringify({
-      version: 1, locale: 'en', cleared: Array.from({ length: 9 }, (_, i) => i + 1),
-      active: { level: 10, moves: [] },
-    })), saveKey);
-    await page.reload();
+    await mockValue(page, mock => { mock.shift = 91_000; });
+    const start = (await effectsPlayed(page)).length;
+    await completeFirst(page);
+    await expect.poll(() => mockValue(page, mock => mock.interstitial.length)).toBe(1);
+    const winSounds = [...moveSounds, ...moveSounds, ...moveSounds, files.match_three, ...moveSounds, files.match_three];
+    expect((await effectsPlayed(page)).slice(start)).toEqual(winSounds);
+    await mockValue(page, mock => {
+      const ad = mock.interstitial[0];
+      ad.onClose(true);
+      ad.onClose(false);
+      ad.onError();
+    });
+    await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual([...winSounds, files.level_complete]);
+    await click(page, 240, 564);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    expect((await readSave(page))?.active?.level).toBe(2);
+    await mockValue(page, mock => mock.interstitial[0].onClose(true));
+    expect((await effectsPlayed(page)).slice(start)).toEqual([...winSounds, files.level_complete, files.ui_click]);
+  });
+
+  test('quick valid UI presses each play once while clicks outside live buttons stay silent', async ({ page }) => {
+    await observeNativeAudio(page);
+    await page.goto('./');
     await expect(canvas(page, 'Play')).toBeVisible();
     await waitForEffects(page);
-    await click(page, 240, 621);
-    await expect(canvas(page, 'Level')).toBeVisible();
+    await click(page, 24, 24);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
-    const { board, solution: [first, reveal] } = LEVELS[9];
-    await inputMove(page, first, 'click', board.length);
-    await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([first]);
-    const beforeReveal = (await effectsPlayed(page)).length;
-    await inputMove(page, reveal, 'click', board.length);
-    await expect.poll(async () => (await effectsPlayed(page)).slice(beforeReveal)).toEqual([...moveSounds, files.shelf_reveal]);
+    const play = await point(page, 240, 553);
+    await page.mouse.dblclick(play.x, play.y);
+    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    expect(await effectsPlayed(page)).toEqual([audioAssets.files.ui_click]);
+    const laterChapter = await point(page, 240, 148);
+    const firstChapter = await point(page, 101, 148);
+    await page.mouse.click(laterChapter.x, laterChapter.y);
+    // Let Phaser register the redrawn input zones.
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.mouse.click(firstChapter.x, firstChapter.y);
+    expect(await effectsPlayed(page)).toEqual(Array(3).fill(audioAssets.files.ui_click));
+  });
+
+  test.describe('stock cues', () => {
+    test.use({ hasTouch: true });
+    const scenarios: { title: string; id: number; matches: boolean; setup: Move[] }[] = [
+      { title: 'one reveal', id: 6, matches: false, setup: [] },
+      { title: 'match then reveal', id: 7, matches: true, setup: [] },
+      {
+        title: 'match then two simultaneous reveals', id: 7, matches: true,
+        setup: [{ from: { shelf: 0, slot: 1 }, to: { shelf: 1, slot: 0 } }],
+      },
+    ];
+    for (const { title, id, matches, setup } of scenarios) {
+      test(`${title} plays one rear-row cue with no overlapping pickup sample`, async ({ page, browserName }) => {
+        const files = audioAssets.files;
+        const level = LEVELS[id - 1];
+        const move = level.solution[0];
+        await page.addInitScript(({ key, id, moves }) => {
+          localStorage.setItem(key, JSON.stringify({
+            version: 1, locale: 'en', cleared: Array.from({ length: id - 1 }, (_, i) => i + 1),
+            active: { level: id, moves },
+          }));
+        }, { key: saveKey, id, moves: setup });
+        await observeNativeAudio(page);
+        await page.goto('./');
+        await expect(canvas(page, 'Play')).toBeVisible();
+        await waitForEffects(page);
+        await click(page, 240, 621);
+        await expect(canvas(page, 'Level')).toBeVisible();
+        await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+
+        const start = (await effectsPlayed(page)).length;
+        await inputMove(page, move, browserName === 'firefox' ? 'click' : 'tap', level.board.length);
+        const expected = [files.item_pickup, files.item_place, ...(matches ? [files.match_three] : []), files.shelf_reveal];
+        await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual(expected);
+        expect((await readSave(page))?.active?.moves).toEqual([...setup, move]);
+
+        // Undo is disabled until the complete reveal animation has settled.
+        await expect.poll(async () => {
+          await click(page, 91, 739);
+          return (await readSave(page))?.active?.moves;
+        }).toEqual(setup);
+        expect((await effectsPlayed(page)).slice(start)).toEqual([...expected, files.ui_click]);
+        expect(await page.evaluate(() => window.studioAudio.sharedClipOverlaps)).toBe(0);
+      });
+    }
   });
 });
 
