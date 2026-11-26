@@ -202,6 +202,7 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
     starts = 0;
     metadata = () => {};
     released = false;
+    loaded = false;
     constructor() { players.push(this); }
     play() {
       this.starts++;
@@ -217,12 +218,13 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
       assert.equal(name, 'loadedmetadata');
       this.metadata = () => { this.readyState = 1; listener(); };
     }
-    load() {}
+    load() { this.loaded = true; }
   }
 
   mockGlobal(t, 'Audio', Player);
-  const mediaSession = { playbackState: 'playing', metadata: { title: 'Track' } };
-  mockGlobal(t, 'navigator', { mediaSession, userAgent: 'Android' });
+  const clearPosition = t.mock.fn();
+  const mediaSession = { playbackState: 'playing', metadata: { title: 'Track' }, setPositionState: clearPosition };
+  mockGlobal(t, 'navigator', { mediaSession, userAgent: 'Desktop site' });
   const audio = new AudioRuntime(new BrowserAudioOutput(event => event === 'background_music' ? 'mock-music' : null),
     { music: 0.6, effects: 0.5 });
   const { platform, events, ads } = platformFixture();
@@ -233,7 +235,7 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
   audio.unlock();
   audio.unlock();
   assert.equal(players.length, 1);
-  assert.equal(players[0].starts, 1);
+  assert.equal(players[0].starts, 2);
   rejectStart();
   await new Promise<void>(resolve => setImmediate(resolve));
   audio.unlock();
@@ -249,7 +251,10 @@ test('music uses one logical loop through navigation, overlapping SDK pauses and
   now += INTERSTITIAL_COOLDOWN;
   const ad = lifecycle.interstitial();
   assert.equal(players[0].released, true);
-  assert.deepEqual(mediaSession, { playbackState: 'none', metadata: null });
+  assert.equal(players[0].loaded, true);
+  assert.equal(mediaSession.playbackState, 'none');
+  assert.equal(mediaSession.metadata, null);
+  assert.deepEqual(clearPosition.mock.calls.map(call => call.arguments), [[]]);
   events.get('game_api_pause')!();
   lifecycle.pauseFor('hidden', true);
   ads[0].onClose(false);
@@ -323,4 +328,104 @@ test('effects preload shared resources once, respect their own volume and stop a
   audio.play('shelf_reveal');
   assert.equal(gain.gain.value, 0);
   assert.deepEqual(calls, ['resume', 'play', 'stop', 'suspend', 'resume', 'play']);
+});
+
+test('touch release retries a pending unlock and effects expire or are invalidated across pauses', async t => {
+  const activation = { isActive: false };
+  const resumes: (() => void)[] = [];
+  const played = t.mock.fn();
+  let now = 0;
+  mockGlobal(t, 'performance', { now: () => now });
+  mockGlobal(t, 'navigator', { userActivation: activation });
+  t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1])));
+  class Context {
+    state = 'suspended';
+    createGain() { return { gain: { value: 0 }, connect() {} }; }
+    createBufferSource() { return { connect() {}, start: played, stop() {} }; }
+    async decodeAudioData() { return {}; }
+    async suspend() { this.state = 'suspended'; }
+    resume() {
+      return new Promise<void>(resolve => resumes.push(() => { this.state = 'running'; resolve(); }));
+    }
+  }
+  mockGlobal(t, 'AudioContext', Context);
+  const audio = new BrowserAudioOutput(event => event === 'item_pickup' ? 'effect' : null);
+  audio.setVolumes({ music: 0, effects: 1 });
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  audio.unlock();
+  audio.play('item_pickup');
+  activation.isActive = true;
+  audio.unlock();
+  assert.equal(resumes.length, 2);
+  now = 101;
+  resumes[1]();
+  resumes[0]();
+  await Promise.resolve();
+  assert.equal(played.mock.callCount(), 0);
+  audio.play('item_pickup');
+  audio.play('item_pickup');
+  assert.equal(played.mock.callCount(), 1);
+
+  audio.setPaused(true);
+  audio.setPaused(false);
+  audio.play('item_pickup');
+  audio.setPaused(true);
+  audio.setPaused(false);
+  resumes[2]();
+  resumes[3]();
+  await Promise.resolve();
+  assert.equal(played.mock.callCount(), 1);
+  audio.play('item_pickup');
+  assert.equal(played.mock.callCount(), 2);
+});
+
+test('a failed decode prepares a reusable media fallback that only plays a ready sound on a new action', async t => {
+  const players: Player[] = [];
+  const decode = t.mock.fn(async () => { throw new Error('decode failed'); });
+  class Context {
+    state = 'running';
+    createGain() { return { gain: { value: 0 }, connect() {} }; }
+    decodeAudioData = decode;
+    async suspend() { this.state = 'suspended'; }
+    async resume() { this.state = 'running'; }
+  }
+  class Player {
+    static readonly HAVE_ENOUGH_DATA = 4;
+    readyState = 0;
+    paused = true;
+    volume = 0;
+    currentTime = 1;
+    readonly path: string;
+    load = t.mock.fn();
+    play = t.mock.fn(async () => { this.paused = false; });
+    pause() { this.paused = true; }
+    constructor(path: string) { this.path = path; players.push(this); }
+  }
+  mockGlobal(t, 'AudioContext', Context);
+  mockGlobal(t, 'Audio', Player);
+  mockGlobal(t, 'HTMLMediaElement', Player);
+  t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1])));
+  const audio = new BrowserAudioOutput(event => event !== 'background_music' ? 'shared' : null);
+  audio.setVolumes({ music: 0, effects: 0.4 });
+  audio.unlock();
+  audio.play('item_pickup');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(decode.mock.callCount(), 1);
+  assert.equal(players.length, 1);
+  const [player] = players;
+  assert.equal(player.path, 'shared');
+  assert.equal(player.load.mock.callCount(), 1);
+  audio.play('item_pickup');
+  player.readyState = Player.HAVE_ENOUGH_DATA;
+  assert.equal(player.play.mock.callCount(), 0);
+  audio.play('item_pickup');
+  audio.play('item_pickup');
+  assert.equal(player.play.mock.callCount(), 1);
+  assert.equal(player.currentTime, 0);
+  assert.equal(player.volume, 0.4);
+  audio.setPaused(true);
+  assert.equal(player.paused, true);
+  audio.play('item_pickup');
+  assert.equal(player.play.mock.callCount(), 1);
 });

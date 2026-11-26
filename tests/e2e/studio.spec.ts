@@ -508,12 +508,7 @@ async function waitForEffects(page: Page) {
 test.describe('original audio playback', () => {
   test.skip(!audioAssets.enabled, 'Original OGG are disabled.');
 
-  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page, browserName }) => {
-    // Exercise Android source teardown on Chromium. Other engines resume the same media element.
-    const android = browserName === 'chromium';
-    if (android) await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'userAgent', { value: navigator.userAgent + ' Android' });
-    });
+  test('music starts on the first gesture, stays continuous and resumes after ads and browser pauses', async ({ page }) => {
     const errors: string[] = [];
     const ogg = new Set<string>();
     page.on('pageerror', error => errors.push(error.message));
@@ -549,12 +544,21 @@ test.describe('original audio playback', () => {
     await page.evaluate(() => { window.studioAudio.music!.currentTime = 12; });
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     await enter(page);
+    await click(page, 433, 54);
+    await expect(canvas(page, 'Settings')).toBeVisible();
+    await click(page, 146, 325);
+    await expect(canvas(page, 'Настройки')).toBeVisible();
+    await click(page, 334, 325);
+    await expect(canvas(page, 'Settings')).toBeVisible();
+    await click(page, 240, 566);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    expect(await musicState(page)).toMatchObject({ starts: 1, attached: true, paused: false });
     await click(page, 389, 739);
     await expect(canvas(page, 'See the next move?')).toBeVisible();
     await click(page, 333, 474);
     await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(false);
-    expect(await musicState(page)).toMatchObject({ starts: 1, attached: !android, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 1, attached: false, paused: true });
     await mockValue(page, mock => {
       mock.rewarded[0].onClose(false);
       mock.rewarded[0].onClose(true);
@@ -565,18 +569,59 @@ test.describe('original audio playback', () => {
     await mockValue(page, mock => { mock.events.game_api_pause(); mock.events.game_api_pause(); });
     await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
     await mockValue(page, mock => { mock.events.game_api_resume(); mock.events.game_api_resume(); });
-    expect(await musicState(page)).toMatchObject({ starts: 2, attached: !android, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 2, attached: false, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 3, error: null, paused: false });
 
     await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    expect(await musicState(page)).toMatchObject({ starts: 3, attached: !android, paused: true });
+    expect(await musicState(page)).toMatchObject({ starts: 3, attached: false, paused: true });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
     expect(await musicState(page)).toMatchObject({ starts: 4, error: null, paused: false });
+
+    // Mobile foregrounding can deliver visibilitychange without a new focus event.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hasFocus', { value: () => false });
+      Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(await musicState(page)).toMatchObject({ starts: 4, attached: false, paused: true });
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(12.1);
+    expect(await musicState(page)).toMatchObject({ starts: 5, error: null, paused: false });
+
+    await completeFirst(page);
+    await click(page, 240, 564);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    expect(await musicState(page)).toMatchObject({ starts: 5, attached: true, paused: false });
     expect([...ogg].sort()).toEqual([...new Set(Object.values(audioAssets.files))].sort());
     expect(errors).toEqual([]);
+  });
+
+  test('an early action stays interactive and a sound still loading never plays late', async ({ page }) => {
+    let releaseClickAsset = () => {};
+    const blocked = new Promise<void>(resolve => { releaseClickAsset = resolve; });
+    await page.route(`**/assets/audio/${audioAssets.files.ui_click}`, async route => {
+      await blocked;
+      await route.continue();
+    });
+    await observeNativeAudio(page);
+    await page.goto('./');
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await click(page, 240, 553);
+    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+    releaseClickAsset();
+    await waitForEffects(page);
+    expect(await effectsPlayed(page)).toEqual([]);
+    await click(page, 142, 350);
+    await expect(canvas(page, 'Level')).toBeVisible();
+    await expect.poll(() => effectsPlayed(page)).toEqual([audioAssets.files.ui_click]);
   });
 
   test('real Web Audio plays each assigned effect once, including match, reveal and victory', async ({ page }) => {

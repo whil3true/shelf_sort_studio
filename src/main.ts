@@ -1,4 +1,4 @@
-import { AudioRuntime, attachAudioGestures, BrowserAudioOutput } from './audio/AudioRuntime.ts';
+import { AudioRuntime, BrowserAudioOutput } from './audio/AudioRuntime.ts';
 import { openStorage, selectLocale } from './platform/Storage.ts';
 import { attachBrowserLifecycle, Lifecycle } from './platform/Lifecycle.ts';
 import { createPlatform } from './platform/Platform.ts';
@@ -9,16 +9,15 @@ import './style.css';
 
 async function start() {
   const storage = openStorage();
+  const audio = new AudioRuntime(new BrowserAudioOutput(), storage.volumes);
   const [platform] = await Promise.all([createPlatform(), loadFonts()]);
   const locale = selectLocale(storage.locale, platform.locale, navigator.language);
-  const audio = new AudioRuntime(new BrowserAudioOutput(), storage.volumes);
   let scene: StudioScene | undefined;
   const lifecycle = new Lifecycle(platform, blocked => {
     audio.pauseFor('platform', blocked);
     scene?.setBlocked(blocked);
   });
-  attachBrowserLifecycle(lifecycle);
-  attachAudioGestures(audio);
+  attachBrowserLifecycle(lifecycle, () => audio.unlock());
 
   scene = new StudioScene(storage, locale, {
     ready: () => lifecycle.ready(),

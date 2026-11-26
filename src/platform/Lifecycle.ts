@@ -69,22 +69,30 @@ export class Lifecycle {
   }
 }
 
-export function attachBrowserLifecycle(lifecycle: Lifecycle) {
+export function attachBrowserLifecycle(lifecycle: Lifecycle, unlockAudio: () => void) {
+  let pageGone = false;
   const focus = () => lifecycle.pauseFor('unfocused', false);
   const visibility = () => {
-    // Mobile browsers can restore visibility without dispatching another focus event.
-    if (!document.hidden && document.hasFocus()) focus();
+    // Android can report the page visible again without a matching focus event.
+    if (!document.hidden) focus();
     lifecycle.pauseFor('hidden', document.hidden);
   };
-  const hide = () => lifecycle.pauseFor('page', true);
-  const show = () => { visibility(); lifecycle.pauseFor('page', false); };
+  const hide = () => { pageGone = true; lifecycle.pauseFor('page', true); };
+  const show = () => { pageGone = false; visibility(); lifecycle.pauseFor('page', false); };
   const blur = () => lifecycle.pauseFor('unfocused', true);
-  const gesture = () => { if (document.hasFocus()) focus(); };
+  const gesture = (event: Event) => {
+    if (!event.isTrusted || pageGone || document.hidden || (event instanceof MouseEvent && event.button !== 0)) return;
+    focus();
+    unlockAudio();
+  };
   document.addEventListener('visibilitychange', visibility);
   window.addEventListener('pagehide', hide);
   window.addEventListener('pageshow', show);
   window.addEventListener('blur', blur);
   window.addEventListener('focus', focus);
-  window.addEventListener('pointerdown', gesture, true);
+  // Capture before Phaser handles input. A touch release can supply activation.
+  for (const event of ['pointerdown', 'pointerup', 'touchend', 'keydown']) {
+    window.addEventListener(event, gesture, { capture: true, passive: true });
+  }
   visibility();
 }
