@@ -1,13 +1,13 @@
 # WebP для полок, товаров и логотипов
 
-Vite подключает установленные WebP из `public/assets/art-refresh/`. В первый комплект вошли 17 файлов для полок, товаров и двух логотипов.
+Vite подключает установленные WebP из `public/assets/art-refresh/`. Утверждённый комплект из 19 WebP установлен в этих каталогах.
 
 | Путь в проекте | Содержимое |
 | --- | --- |
 | `public/assets/art-refresh/items/` | 14 WebP с именами из `GOODS` |
 | `public/assets/art-refresh/shelves/shelf.webp` | Задняя стенка, основание и кромка одной полки |
 | `public/assets/art-refresh/logo/` | `wordmark-ru.webp` и `wordmark-en.webp` |
-| `public/assets/art-refresh/ui/` | Иллюстрации меню и победы доступны после установки второго комплекта |
+| `public/assets/art-refresh/ui/` | Иллюстрации меню и победы |
 
 В `src/ui/ArtAssets.ts` указаны игровые ключи, путь WebP и резервный PNG каждого ресурса. При запуске Vite выбирает путь по наличию файла в `public`. При частичной загрузке каждый отсутствующий WebP заменяется соответствующим PNG. После изменения набора файлов перезапустите Vite или пересоберите проект. Пути в сборке относительные, поэтому ресурсы также загружаются в подкаталоге GitHub Pages.
 
@@ -25,9 +25,9 @@ npm run preview -- --host 0.0.0.0
 
 ## Вторая итерация
 
-Архив `shelf-sort-studio-visual-refresh-webp.zip` содержит 19 файлов внутри одной папки `incoming-assets/`. Загрузите файлы из этой папки в корневую `incoming-assets/` ветки `feature/visual-style-refresh-and-font`. В том же Draft PR разложите комплект по действующим путям одним коммитом.
+Все 19 файлов из утверждённого архива `shelf-sort-studio-visual-refresh-webp.zip` установлены по действующим путям. Временные копии WebP из `incoming-assets/` удалены после побайтовой сверки.
 
-| Файлы в `incoming-assets/` | Целевая папка в `public/assets/art-refresh/` | Размер |
+| Файлы | Папка в `public/assets/art-refresh/` | Размер |
 | --- | --- | --- |
 | `apple`, `pear`, `lemon`, `honey`, `jam`, `tea`, `cocoa`, `milk`, `flour`, `cookie`, `soda`, `mint`, `candle`, `soap` (все `.webp`) | `items/` | 192 × 192 |
 | `shelf.webp` | `shelves/` | 432 × 272 |
@@ -35,6 +35,6 @@ npm run preview -- --host 0.0.0.0
 | `shop.webp` | `ui/` | 744 × 460 |
 | `victory.webp` | `ui/` | 424 × 412 |
 
-Товары, полка и логотипы заменяют WebP по действующим путям. Арт меню и победы получает два новых пути с резервными `assets/art/shop.png` и `assets/art/victory.png`. До установки сборка использует текущие WebP и резервные PNG. После установки пересоберите проект и выполните `npm run verify`, `npm run release:zip` и `npm run test:e2e`.
+Сборка загружает все 19 WebP, включая иллюстрации меню и победы. Для проверки комплекта выполните `npm run verify`, `npm run release:zip` и `npm run test:e2e`.
 
 Nunito Variable заменяет Lora и Manrope. Мягкие окончания штрихов и открытые формы сохраняют читаемость мелких цифр, подписей и кириллицы. В игре используются локальные Latin и Cyrillic WOFF2. Начертание 500 предназначено для пояснений, 600–700 для подписей и кнопок, 800 для заголовков, цифр и основных действий. Лицензия SIL Open Font License 1.1 с уведомлением об авторских правах включена в `public/assets/font-licenses/nunito-OFL.txt` и дистрибутив. [Nunito на Fontsource](https://fontsource.org/fonts/nunito/about)
