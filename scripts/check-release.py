@@ -1,5 +1,6 @@
 """Validate generated art, HTML references and the Yandex upload archive."""
 from argparse import ArgumentParser
+from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from struct import unpack
@@ -12,6 +13,7 @@ DIST = ROOT / 'dist'
 ART_REFRESH_DIRS = {'items', 'shelves', 'logo', 'ui'}
 ART_REFRESH_PLACEHOLDERS = {f'assets/art-refresh/{folder}/.gitkeep' for folder in ART_REFRESH_DIRS}
 MANIFEST = ROOT / 'src/audio/AudioAssets.json'
+AUDIO_HASHES = ROOT / 'docs/audio.sha256.json'
 GOODS = 'jam tea honey cocoa pear apple lemon soda soap candle milk flour mint cookie'.split()
 ART = {**dict.fromkeys(GOODS, (192, 192)), 'wallpaper': (288, 288), 'shelf': (432, 272),
        'shop': (832, 514), 'victory': (424, 412),
@@ -51,7 +53,11 @@ def allowed_audio():
     files = {f'assets/audio/{name}' for name in entries.values()}
     require(len(files) == 7 and all(re.fullmatch(r'assets/audio/[a-zA-Z0-9_-]+\.ogg', name) for name in files),
             'Expected seven distinct OGG files in the audio manifest')
-    return files if manifest['enabled'] else set()
+    if not manifest['enabled']:
+        return {}
+    hashes = {f'assets/audio/{name}': digest for name, digest in json.loads(AUDIO_HASHES.read_text()).items()}
+    require(files == hashes.keys(), 'Audio manifest and SHA-256 registry differ')
+    return hashes
 
 
 def verify(names, read, audio, refresh):
@@ -80,7 +86,10 @@ def verify(names, read, audio, refresh):
             'The release needs the Latin and Cyrillic Nunito font subsets')
     require(all(read(name).startswith(b'wOF2') for name in fonts), 'Invalid WOFF2 file')
     require(FONT_LICENSES <= names, 'Missing font licenses')
-    require(audio <= names, f'Missing installed audio: {sorted(audio - names)}')
+    actual_audio = {name for name in names if name.startswith('assets/audio/') and name != 'assets/audio/README.md'}
+    require(actual_audio == audio.keys(), f'Audio files differ from manifest: {sorted(actual_audio ^ audio.keys())}')
+    for name, expected in audio.items():
+        require(sha256(read(name)).hexdigest() == expected, f'Wrong audio SHA-256: {name}')
 
 
 def main():
@@ -92,7 +101,7 @@ def main():
     files = {p.relative_to(DIST).as_posix(): p for p in DIST.rglob('*') if p.is_file()}
     names = set(files)
     verify(names, lambda name: files[name].read_bytes(), audio, refresh)
-    print(f'Validated {len(ART)} PNG assets, {len(refresh)} installed WebP assets, index.html and the enabled audio manifest')
+    print(f'Validated {len(ART)} PNG assets, {len(refresh)} installed WebP assets, index.html and SHA-256 of {len(audio)} OGG files')
     if not args.zip:
         return
     release = names - {'assets/audio/README.md'} - ART_REFRESH_PLACEHOLDERS
