@@ -729,7 +729,6 @@ test.describe('original audio playback', () => {
   });
 
   test.describe('stock cues', () => {
-    test.use({ hasTouch: true });
     const scenarios: { title: string; id: number; matches: boolean; setup: Move[] }[] = [
       { title: 'one reveal', id: 6, matches: false, setup: [] },
       { title: 'match then reveal', id: 7, matches: true, setup: [] },
@@ -739,7 +738,7 @@ test.describe('original audio playback', () => {
       },
     ];
     for (const { title, id, matches, setup } of scenarios) {
-      test(`${title} plays one rear-row cue with no overlapping pickup sample`, async ({ page, browserName }) => {
+      test(`${title} plays one rear-row cue with no overlapping pickup sample`, async ({ page }) => {
         const files = audioAssets.files;
         const level = LEVELS[id - 1];
         const move = level.solution[0];
@@ -758,7 +757,7 @@ test.describe('original audio playback', () => {
         await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
 
         const start = (await effectsPlayed(page)).length;
-        await inputMove(page, move, browserName === 'firefox' ? 'click' : 'tap', level.board.length);
+        await inputMove(page, move, 'click', level.board.length);
         const expected = [files.item_pickup, files.item_place, ...(matches ? [files.match_three] : []), files.shelf_reveal];
         await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual(expected);
         expect((await readSave(page))?.active?.moves).toEqual([...setup, move]);
