@@ -1,9 +1,8 @@
 import Phaser from 'phaser';
+import { studioFont } from './Fonts';
 
 export const ink = '#53372c';
 export const mutedInk = '#735748';
-const serif = '"Studio Serif", Georgia, serif';
-const sans = '"Studio Sans", Arial, sans-serif';
 
 export const CONTROL_ICONS = ['undo', 'restart', 'hint'] as const;
 type ControlIcon = (typeof CONTROL_ICONS)[number];
@@ -100,13 +99,13 @@ export class StudioView {
   }
 
   label(text: string, x: number, y: number, size = 23, options: {
-    color?: string; bold?: boolean; serif?: boolean; weight?: 600 | 700;
+    color?: string; weight?: 500 | 600 | 700 | 800;
     tracking?: number; align?: 'left' | 'center'; wrap?: number;
   } = {}) {
     const label = this.scene.add.text(x, y, text, {
-      fontFamily: options.serif ? serif : sans, fontSize: size,
+      fontFamily: studioFont, fontSize: size,
       resolution: this.density,
-      fontStyle: String(options.weight ?? (options.bold || options.serif ? 700 : 400)),
+      fontStyle: String(options.weight ?? 500),
       color: options.color ?? ink, letterSpacing: options.tracking ?? 0,
       align: options.align ?? 'center', wordWrap: { width: options.wrap ?? 436 },
       lineSpacing: 5, padding: { x: 2, y: 3 },
@@ -167,10 +166,10 @@ export class StudioView {
     const controlIcon = icon !== undefined && isControlIcon(icon);
     const labelY = options.caption ? y - 16 : y;
     const label = this.label(text, x + (text && icon && !options.caption ? (controlIcon ? 13 : 10) : 0), labelY,
-      options.size ?? 22, { color, serif: !!options.caption, weight: kind === 'honey' || options.caption ? 700 : 600,
+      options.size ?? 22, { color, weight: kind === 'honey' || options.caption ? 800 : 700,
         wrap: w - (text && icon ? 36 : 12) });
     if (options.caption) this.label(options.caption.toUpperCase(), x, y + 21, 14, {
-      color: kind === 'completed' ? ink : mutedInk, weight: 600, tracking: 0.8, wrap: w - 24,
+      color: kind === 'completed' ? ink : mutedInk, weight: 700, tracking: 0.35, wrap: w - 24,
     });
     if (controlIcon) {
       let iconX = x - w / 2 + 21;
@@ -184,7 +183,7 @@ export class StudioView {
       }
       this.image(`control-${icon}`, iconX, y, 27, 27).setAlpha(live ? 1 : 0.74);
     } else if (icon) {
-      this.icon(icon, x - (text ? w / 2 - 22 : 0), options.caption ? y - 8 : labelY,
+      this.icon(icon, x - (text ? w / 2 - 22 : 0), options.caption ? y - 2 : labelY,
         live ? 0x553c31 : 0x846b55, text ? 0.83 : 1.17);
     }
     if (!live) return;

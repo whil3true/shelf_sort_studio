@@ -78,8 +78,8 @@ export class StudioScene extends Phaser.Scene {
   preload() {
     const paths = artPaths();
     for (const { id } of ART_REFRESH) this.load.image(id, `./${paths[id]}`);
-    for (const id of ['shop', 'victory', ...CONTROL_ICONS.map(name => `control-${name}`)]) {
-      this.load.image(id, `./assets/art/${id}.png`);
+    for (const id of CONTROL_ICONS) {
+      this.load.image(`control-${id}`, `./assets/art/control-${id}.png`);
     }
   }
 
@@ -120,14 +120,11 @@ export class StudioScene extends Phaser.Scene {
     ctx.clearRect(0, 0, width, height);
     canvas.drawFrame(good, undefined, 0, 0, false);
 
-    const shadow = ctx.createLinearGradient(0, height * 0.18, 0, height * 0.92);
-    shadow.addColorStop(0, 'rgba(61, 34, 26, 0.70)');
-    shadow.addColorStop(1, 'rgba(77, 48, 34, 0.50)');
     // Shade the sprite's own pixels so opacity stays constant through the reveal.
     ctx.save();
     ctx.globalCompositeOperation = 'source-atop';
-    ctx.globalAlpha = depth;
-    ctx.fillStyle = shadow;
+    ctx.globalAlpha = depth * 0.53;
+    ctx.fillStyle = '#634137';
     ctx.fillRect(0, 0, width, height);
     ctx.restore();
     canvas.refresh();
@@ -203,7 +200,7 @@ export class StudioScene extends Phaser.Scene {
     if (this.busy) {
       this.view.backdrop(0.6);
       this.view.surface('panel', 240, 400, 345, 120);
-      this.view.label(this.tr(this.busyNotice), 240, 395, 22, { bold: true, wrap: 310 });
+      this.view.label(this.tr(this.busyNotice), 240, 395, 22, { weight: 800, wrap: 310 });
     } else if (this.modal) {
       this.drawOverlay(this.modal);
     }
@@ -222,7 +219,7 @@ export class StudioScene extends Phaser.Scene {
     const refreshed = this.refreshed(logo);
     view.image(logo, 240, 134, refreshed ? 352 : 400, refreshed ? 144 : 142);
     view.label(this.tr('theme'), 240, 220, 18, { color: mutedInk, weight: 600 });
-    view.image('shop', 240, 376, 416, 257);
+    view.image('shop', 240, 376, 372, 230);
     view.button(240, 553, 382, 67, this.tr('play'), () => {
       this.chapter = Math.floor(((this.store.currentLevel ?? this.store.nextLevel ?? 18) - 1) / 6);
       this.go('levels');
@@ -236,7 +233,7 @@ export class StudioScene extends Phaser.Scene {
 
   private header(title: string, back: () => void, settings = false) {
     this.view.button(47, 54, 61, 56, '', back, { icon: 'back', live: !this.animation });
-    this.view.label(title, 240, 52, 29, { serif: true, bold: true, wrap: 315 });
+    this.view.label(title, 240, 52, 29, { weight: 800, wrap: 315 });
     if (settings) this.view.button(433, 54, 61, 56, '', () => this.overlay('settings'), { icon: 'settings', live: !this.animation });
   }
 
@@ -250,7 +247,7 @@ export class StudioScene extends Phaser.Scene {
     }
     const levels = LEVELS.filter(item => item.chapter === this.chapter);
     const cleared = levels.filter(item => this.store.isCleared(item.id)).length;
-    view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 32, { serif: true });
+    view.label(this.tr(CHAPTERS[this.chapter]), 240, 221, 32, { weight: 800, wrap: 380 });
     view.label(`${cleared}/6 ${this.tr('completed')}`, 240, 262, 17, { color: mutedInk, weight: 600 });
     for (const [index, item] of levels.entries()) {
       const x = 142 + index % 2 * 196;
@@ -591,7 +588,7 @@ export class StudioScene extends Phaser.Scene {
     const next = this.level < 18 ? this.level + 1 : null;
     this.view.surface('panel', 240, 402, 424, 634);
     this.view.image('victory', 240, 277, 228, 222);
-    this.view.label(this.tr(next ? 'won' : 'wonAll'), 240, 421, 39, { serif: true, bold: true, wrap: 388 });
+    this.view.label(this.tr(next ? 'won' : 'wonAll'), 240, 421, 39, { weight: 800, wrap: 388 });
     this.view.label(this.tr(next ? 'wonText' : 'wonAllText'), 240, 478, 21, { color: mutedInk });
     if (next) this.view.button(240, 564, 359, 64, this.tr('next'), () => this.open(next), { kind: 'honey', icon: 'arrow' });
     this.view.button(240, 634, 359, 60, this.tr('levelSelect'), () => this.go('levels'), { icon: 'back' });
@@ -608,7 +605,7 @@ export class StudioScene extends Phaser.Scene {
     view.backdrop(0.49);
     if (modal === 'settings') {
       view.surface('panel', 240, 400, 430, 462);
-      view.label(this.tr('settings'), 240, 219, 35, { bold: true, serif: true });
+      view.label(this.tr('settings'), 240, 219, 35, { weight: 800 });
       view.label(this.tr('language'), 69, 276, 18, { align: 'left', weight: 600 });
       for (const [index, locale] of (['ru', 'en'] as const).entries()) {
         view.button(146 + index * 188, 325, 169, 54, locale === 'ru' ? 'Русский' : 'English', () => {
@@ -625,7 +622,7 @@ export class StudioScene extends Phaser.Scene {
     }
     if (modal === 'help') {
       view.surface('panel', 240, 402, 431, 560);
-      view.label(this.tr('help'), 240, 181, 36, { bold: true, serif: true });
+      view.label(this.tr('help'), 240, 181, 36, { weight: 800 });
       const examples = ['pear', 'jam', 'tea', 'honey'] as const;
       for (const [index, name] of examples.entries()) {
         view.image(name, 81, 261 + index * 85, 49, 49);
@@ -635,7 +632,7 @@ export class StudioScene extends Phaser.Scene {
       return;
     }
     view.surface('panel', 240, 400, 430, 284);
-    view.label(this.modalLabel(modal), 240, 319, 29, { bold: true, serif: true });
+    view.label(this.modalLabel(modal), 240, 319, 29, { weight: 800 });
     const details = { restart: 'restartText', replace: 'replaceText', hint: 'hintText' } as const;
     view.label(this.tr(details[modal]), 240, 389, 20, { wrap: 340 });
     view.button(146, 474, 169, 57, this.tr('cancel'), () => this.overlay(null), { size: 18 });

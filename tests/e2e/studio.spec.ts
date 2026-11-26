@@ -175,7 +175,7 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   expect(errors).toEqual([]);
 });
 
-test('production requests exactly one installed texture or PNG fallback per art ID', async ({ page }) => {
+test('production loads one texture per art ID and both local font subsets before the menu', async ({ page }) => {
   const responses = new Map<string, { status: number; mime: string }[]>();
   page.on('response', response => {
     const path = new URL(response.url()).pathname.replace(/^\/shelf_sort_studio\//, '');
@@ -192,6 +192,13 @@ test('production requests exactly one installed texture or PNG fallback per art 
     expect(responses.get(expected), expected).toEqual([{ status: 200, mime: installed ? 'image/webp' : 'image/png' }]);
     expect(responses.has(installed ? fallback : webp)).toBe(false);
   }
+  for (const alphabet of ['latin', 'cyrillic']) {
+    const fonts = [...responses].filter(([path]) => path.startsWith(`assets/nunito-${alphabet}-wght-normal-`));
+    expect(fonts.map(([, history]) => history)).toEqual([[{ status: 200, mime: 'font/woff2' }]]);
+  }
+  const ready = await page.evaluate(() => [...document.fonts]
+    .filter(face => face.family.replaceAll('"', '') === 'Studio Nunito' && face.status === 'loaded').length);
+  expect(ready).toBe(2);
 });
 
 test('drag renders a single item and restores its source after cancel or invalid drop', async ({ page }) => {

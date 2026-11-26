@@ -1,5 +1,5 @@
 import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
-import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { word } from '../src/ui/Locale.ts';
 
@@ -9,10 +9,8 @@ mkdirSync(dir, { recursive: true });
 for (const name of ['button-green', 'button-paper', 'button-red', 'button-muted', 'paper']) {
   rmSync(new URL(name + '.png', dir), { force: true });
 }
-const licenses = new URL('../public/assets/font-licenses/', import.meta.url);
-mkdirSync(licenses, { recursive: true });
-for (const [name, directory] of [['lora', '@fontsource/lora'], ['manrope', '@fontsource-variable/manrope']]) {
-  copyFileSync(new URL(`../node_modules/${directory}/LICENSE`, import.meta.url), new URL(`${name}-OFL.txt`, licenses));
+for (const name of ['lora', 'manrope']) {
+  rmSync(new URL(`../public/assets/font-licenses/${name}-OFL.txt`, import.meta.url), { force: true });
 }
 function save(name, canvas) {
   writeFileSync(new URL(name + '.png', dir), canvas.toBuffer('image/png'));
@@ -238,11 +236,11 @@ save('shelf', sheet(216, 136, () => {
 const wordmarkWidth = 400;
 
 function wordmarkLettering(text, font, size, maxWidth, center, top, bottom) {
-  ctx.font = `700 ${size}px "${font}"`;
+  ctx.font = `800 ${size}px "${font}"`;
   let bounds = ctx.measureText(text);
   const width = bounds.actualBoundingBoxLeft + bounds.actualBoundingBoxRight;
   if (width > maxWidth) {
-    ctx.font = `700 ${size * maxWidth / width}px "${font}"`;
+    ctx.font = `800 ${size * maxWidth / width}px "${font}"`;
     bounds = ctx.measureText(text);
   }
   const { actualBoundingBoxLeft: left, actualBoundingBoxRight: right,
@@ -256,7 +254,7 @@ function wordmarkLettering(text, font, size, maxWidth, center, top, bottom) {
 
 for (const [locale, alphabet] of [['ru', 'cyrillic'], ['en', 'latin']]) {
   const font = `Studio Wordmark ${alphabet}`;
-  const file = new URL(`../node_modules/@fontsource/lora/files/lora-${alphabet}-700-normal.woff2`, import.meta.url);
+  const file = new URL(`../node_modules/@fontsource-variable/nunito/files/nunito-${alphabet}-wght-normal.woff2`, import.meta.url);
   if (!GlobalFonts.registerFromPath(fileURLToPath(file), font)) throw new Error(`Could not load ${font}`);
   save(`wordmark-${locale}`, sheet(wordmarkWidth, 142, () => {
     const center = wordmarkWidth / 2;

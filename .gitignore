@@ -4,4 +4,5 @@ test-results/
 playwright-report/
 *.zip
 public/assets/art/
-public/assets/font-licenses/
+public/assets/font-licenses/*
+!public/assets/font-licenses/nunito-OFL.txt
