@@ -17,6 +17,8 @@ export class BrowserAudioOutput implements AudioOutput {
   private gain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly voices = new Set<AudioBufferSourceNode>();
+  private effectsResume: Promise<void> | null = null;
+  private effectsPauseRevision = 0;
   private volumes: Readonly<Volumes> = { music: 0, effects: 0 };
   private unlocked = false;
   private paused = false;
@@ -55,7 +57,7 @@ export class BrowserAudioOutput implements AudioOutput {
   unlock(): void {
     if (this.paused) return;
     this.unlocked = true;
-    if (this.context && this.context.state !== 'running') void this.context.resume().catch(() => {});
+    if (this.context?.state !== 'running') this.resumeEffects();
     this.syncMusic();
   }
 
@@ -70,25 +72,49 @@ export class BrowserAudioOutput implements AudioOutput {
     if (paused === this.paused) return;
     this.paused = paused;
     if (paused) {
+      this.effectsPauseRevision++;
+      this.effectsResume = null;
       for (const voice of this.voices) voice.stop();
       this.voices.clear();
       void this.context?.suspend().catch(() => {});
     } else if (this.unlocked) {
       // Queue resume even when a no-fill callback arrives before suspend settles.
-      void this.context?.resume().catch(() => {});
+      this.resumeEffects();
     }
     this.syncMusic();
   }
 
   play(effect: AudioEffect): void {
     const path = this.pathFor(effect);
-    const context = this.context;
-    if (!path || !context || !this.gain || !this.unlocked || this.paused || !this.volumes.effects) return;
+    if (!path || !this.unlocked || this.paused || !this.volumes.effects) return;
     const buffer = this.buffers.get(path);
-    // Drop unavailable effects immediately so they cannot play on a later screen.
-    if (!buffer || context.state !== 'running') return;
+    if (!buffer) return;
+    if (this.context?.state === 'running') {
+      this.startEffect(buffer);
+      return;
+    }
+
+    // A decoded clip can follow a gesture or ad resume by one audio startup interval.
+    // Drop it if resume is slow or another pause supersedes the event.
+    const revision = this.effectsPauseRevision;
+    const deadline = performance.now() + 100;
+    void this.effectsResume?.then(() => {
+      if (revision === this.effectsPauseRevision && performance.now() <= deadline) this.startEffect(buffer);
+    }, () => {});
+  }
+
+  private resumeEffects(): void {
+    if (!this.context || this.effectsResume) return;
+    const resume = this.context.resume();
+    this.effectsResume = resume;
+    const clear = () => { if (this.effectsResume === resume) this.effectsResume = null; };
+    void resume.then(clear, clear);
+  }
+
+  private startEffect(buffer: AudioBuffer): void {
+    if (this.paused || !this.volumes.effects || this.context?.state !== 'running' || !this.gain) return;
     try {
-      const voice = context.createBufferSource();
+      const voice = this.context.createBufferSource();
       voice.buffer = buffer;
       voice.connect(this.gain);
       voice.onended = () => { this.voices.delete(voice); voice.disconnect(); };

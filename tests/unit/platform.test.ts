@@ -296,8 +296,12 @@ test('effects preload shared resources once, respect their own volume and stop a
       };
     }
     async decodeAudioData() { return {}; }
-    async suspend() { calls.push('suspend'); }
-    async resume() { this.state = 'running'; calls.push('resume'); }
+    async suspend() { this.state = 'suspended'; calls.push('suspend'); }
+    async resume() {
+      calls.push('resume');
+      await Promise.resolve();
+      this.state = 'running';
+    }
   }
   mockGlobal(t, 'AudioContext', Context);
   const audio = new BrowserAudioOutput(event => event === 'item_pickup' || event === 'shelf_reveal' ? 'shared-effect' : null);
@@ -308,11 +312,13 @@ test('effects preload shared resources once, respect their own volume and stop a
   assert.deepEqual(calls, []);
   audio.unlock();
   audio.play('item_pickup');
+  await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(gain.gain.value, 0.35);
   audio.setPaused(true);
   audio.play('shelf_reveal');
   audio.setPaused(false);
   audio.play('shelf_reveal');
+  await new Promise<void>(resolve => setImmediate(resolve));
   audio.setVolumes({ music: 0.8, effects: 0 });
   audio.play('shelf_reveal');
   assert.equal(gain.gain.value, 0);

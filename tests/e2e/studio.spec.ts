@@ -583,11 +583,13 @@ test.describe('original audio playback', () => {
     const files = audioAssets.files;
     await observeNativeAudio(page);
     await page.goto('./');
+    await expect(canvas(page, 'Play')).toBeVisible();
     await waitForEffects(page);
-    await enter(page);
+    await click(page, 24, 24);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+    await enter(page);
     const menuSounds = await effectsPlayed(page);
-    expect(menuSounds).toContain(files.ui_click);
+    expect(menuSounds).toEqual([files.ui_click, files.ui_click]);
     const level = LEVELS[0];
     const move = level.solution[0];
     const occupied = level.board.flatMap((shelf, i) => shelf.front.flatMap((good, j) =>
