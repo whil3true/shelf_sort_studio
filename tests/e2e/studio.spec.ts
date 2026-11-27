@@ -4,7 +4,7 @@ import { expect, test, type Page } from '@playwright/test';
 import type Phaser from 'phaser';
 import type { AudioEffect } from '../../src/audio/AudioAssetManifest.ts';
 import { EndlessSession } from '../../src/game/EndlessSession.ts';
-import { lossPath, lossSeed, supplyPath, supplySeed } from '../support/endless-fixtures.ts';
+import { lossPath, lossSeed, moveSupplyPath, moveSupplySeed, supplyPath, supplySeed } from '../support/endless-fixtures.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
@@ -447,6 +447,66 @@ async function endlessTurn(page: Page, move: Move, input: 'click' | 'tap' | 'dra
   await expect(page.locator('canvas')).toHaveAttribute('aria-busy', 'false');
   await inputMove(page, move, input, 6);
 }
+
+test('a plain move animates a partial rear row in its own slots at 480×800', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await seededEndless(page, moveSupplySeed);
+  await page.goto('./');
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 481);
+  const screen = canvas(page, 'Endless Mode');
+  await expect(screen).toBeVisible();
+
+  const model = EndlessSession.start(moveSupplySeed);
+  for (const move of moveSupplyPath.slice(0, -1)) {
+    expect(model.move(move)?.supplied).toEqual([]);
+    await endlessTurn(page, move);
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  }
+  await expect(screen).toHaveAttribute('aria-busy', 'false');
+
+  const move = moveSupplyPath.at(-1)!;
+  const supply = model.move(move)!;
+  expect(supply.events).toEqual([]);
+  const shelf = supply.supplied.find(index => index !== move.from.shelf && index !== move.to.shelf)!;
+  const rear = model.board[shelf].stock[0];
+  expect(rear.filter(Boolean)).toHaveLength(1);
+  const sample = async (slot: number) => {
+    const center = slotPoint({ shelf, slot }, model.board.length);
+    const corner = await point(page, center.x - 9, center.y - 43);
+    return page.screenshot({ clip: { ...corner, width: 28, height: 19 }, scale: 'css' });
+  };
+  const before = await Promise.all(rear.map((_, slot) => sample(slot)));
+  // Observe the lock even when browser screenshot or input round trips exceed the animation duration.
+  await screen.evaluate(node => {
+    const observer = new MutationObserver(changes => {
+      if (node.getAttribute('aria-busy') === 'true' || changes.some(change => change.oldValue === 'true')) {
+        node.setAttribute('data-test-stock-animated', 'true');
+        observer.disconnect();
+      }
+    });
+    observer.observe(node, { attributeFilter: ['aria-busy'], attributeOldValue: true });
+  });
+  await endlessTurn(page, move);
+  await expect(screen).toHaveAttribute('data-test-stock-animated', 'true');
+  await expect(screen).toHaveAttribute('aria-busy', 'false');
+  await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  for (const [slot, good] of rear.entries()) {
+    expect((await sample(slot)).equals(before[slot])).toBe(good === null);
+  }
+
+  const front = model.board[shelf].front;
+  const empty = model.board.findIndex(({ front, stock }) => front.every(good => good === null) && !stock.length);
+  for (const [slot, good] of front.entries()) {
+    if (!good) continue;
+    const expose = { from: { shelf, slot }, to: { shelf: empty, slot } };
+    expect(model.move(expose)).toBeTruthy();
+    await endlessTurn(page, expose);
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  }
+  await expect(screen).toHaveAttribute('aria-busy', 'false');
+  expect(model.board[shelf]).toEqual({ front: rear, stock: [] });
+});
 
 test('Endless Mode supplies stock, resumes and restores the exact turn with one SDK reward', async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 800 });

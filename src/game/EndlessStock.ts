@@ -2,8 +2,8 @@ import { GOODS, goodsLeft, type Board, type Good, type Row } from './Board.ts';
 import { solve } from './Solver.ts';
 
 export const ENDLESS_SHELVES = 6;
-export const MAX_ENDLESS_STOCK = 4;
-export const MAX_ENDLESS_GOODS = 27;
+export const MAX_ENDLESS_STOCK = 5;
+export const MAX_ENDLESS_GOODS = 30;
 
 // Each layout is certified by replaying the production solver in the regression suite.
 // Relabeling goods and permuting shelves and slots preserve the certificate.
@@ -14,9 +14,9 @@ const layouts = [
 ] as const;
 
 const settings = [
-  { palette: 6, capacity: 21, stock: 3, interval: 2 },
-  { palette: 8, capacity: 24, stock: 4, interval: 1 },
-  { palette: 11, capacity: MAX_ENDLESS_GOODS, stock: MAX_ENDLESS_STOCK, interval: 1 },
+  { palette: 6, capacity: 24, stock: 4, moveInterval: 6, matchInterval: 2, fullChance: 45 },
+  { palette: 8, capacity: 27, stock: 4, moveInterval: 3, matchInterval: 1, fullChance: 78 },
+  { palette: 11, capacity: MAX_ENDLESS_GOODS, stock: MAX_ENDLESS_STOCK, moveInterval: 3, matchInterval: 1, fullChance: 90 },
 ] as const;
 
 export function endlessTier(matches: number) {
@@ -71,30 +71,43 @@ export function dealEndless(seed: number, randomState = seed, matches = 0) {
   return { board, randomState: random.state };
 }
 
+export function endlessStockDue(matches: number, sinceMove: number, sinceMatch: number, matched: boolean): boolean {
+  const tier = endlessTier(matches);
+  const config = settings[tier];
+  return sinceMove >= config.moveInterval
+    || (matched && sinceMatch >= config.matchInterval && sinceMove >= (tier === 0 ? 2 : 1));
+}
+
 export function addEndlessStock(
-  board: Board, seed: number, randomState: number, matches: number, sinceSupply: number, cleared: ReadonlySet<number>,
+  board: Board, seed: number, randomState: number, matches: number, cleared: ReadonlySet<number>,
 ) {
   const config = settings[endlessTier(matches)];
-  if (sinceSupply < config.interval || goodsLeft(board) + 6 > config.capacity
-    || board.filter(shelf => shelf.stock.length).length + 2 > config.stock) return null;
+  const remaining = goodsLeft(board);
+  if (remaining + 3 > config.capacity || board.filter(shelf => shelf.stock.length).length + 2 > config.stock) return null;
 
   const random = new Random(randomState);
   const available = random.shuffle(board.flatMap((shelf, index) =>
     !shelf.stock.length && shelf.front.some(Boolean) ? [index] : []));
-  // If only one preferred shelf is available, a just-cleared shelf with an exposed row can hold reserve stock.
-  available.sort((a, b) => Number(cleared.has(a)) - Number(cleared.has(b)));
   if (available.length < 2) return null;
 
   const [a, b] = random.shuffle(palette(seed).slice(0, config.palette));
-  const rows = [row(random, [a, a, b]), row(random, [a, b, b])];
+  const full = remaining + 6 <= config.capacity && random.index(100) < config.fullChance;
+  // A full reserve can raise front occupancy when exposed. Prefer accessible shelves as difficulty increases.
+  const frontCount = (index: number) => board[index].front.filter(Boolean).length;
+  available.sort((a, b) => Number(cleared.has(a)) - Number(cleared.has(b))
+    || (full && matches >= 6 ? frontCount(a) - frontCount(b) : 0));
   const shelves = available.slice(0, 2);
+  const rows = full
+    ? [row(random, [a, a, b]), row(random, [a, b, b])]
+    : random.shuffle([row(random, [a, null, a]), row(random, [null, a, null])]);
   const candidate = board.map((shelf, index) => {
     const at = shelves.indexOf(index);
     return at < 0 ? shelf : { ...shelf, stock: [rows[at]] };
   });
-  // One bounded attempt per eligible match. A budget limit leaves the original board intact.
-  if (solve(candidate, 36, 3).status !== 'solved') {
-    return { board, supplied: [], randomState: random.state };
-  }
-  return { board: candidate, supplied: shelves, randomState: random.state };
+
+  // Keep the existing single, bounded search per turn. Only a complete solution certifies the delivery.
+  const check = solve(candidate, 36, 3).status;
+  return check === 'solved'
+    ? { board: candidate, supplied: shelves, randomState: random.state, check }
+    : { board, supplied: [], randomState: random.state, check };
 }

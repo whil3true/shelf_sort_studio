@@ -1,4 +1,4 @@
-import { goodsLeft, moveGood, type Board, type Move, type Row, type Shelf } from './Board.ts';
+import { GOODS, goodsLeft, moveGood, type Board, type Good, type Move, type Row, type Shelf } from './Board.ts';
 
 export type SearchResult =
   | { status: 'solved'; moves: readonly Move[]; visited: number }
@@ -13,8 +13,11 @@ interface Node {
   move?: Move;
 }
 
-function rowKey(row: Row): string {
-  return [...row].map(good => good ?? '').sort().join(',');
+// Two bits per good hold counts from zero to three. Slot order is cosmetic.
+const goodKeys = Object.fromEntries(GOODS.map((good, index) => [good, 1 << (index * 2)])) as Record<Good, number>;
+
+function rowKey([a, b, c]: Row): number {
+  return (a ? goodKeys[a] : 0) + (b ? goodKeys[b] : 0) + (c ? goodKeys[c] : 0);
 }
 
 function keyOf(board: Board, shelfKeys: WeakMap<Shelf, string>): string {

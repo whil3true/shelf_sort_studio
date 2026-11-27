@@ -545,7 +545,10 @@ export class StudioScene extends Phaser.Scene {
     else this.store.saveRun(this.level, session);
     if (!result.events.length) {
       this.host.audio('item_place');
-      this.finishMove();
+      if (stock?.supplied.length) {
+        this.animation = true;
+        this.animateStock(stock);
+      } else this.finishMove();
       return true;
     }
 
