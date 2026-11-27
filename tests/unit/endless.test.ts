@@ -4,10 +4,10 @@ import { EMPTY_ROW, goodsLeft, moveGood, type Board } from '../../src/game/Board
 import { EndlessSession, hasLegalMove } from '../../src/game/EndlessSession.ts';
 import { addEndlessStock, dealEndless, endlessStockDue } from '../../src/game/EndlessStock.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
-import { solve } from '../../src/game/Solver.ts';
+import { solve, solveStock } from '../../src/game/Solver.ts';
 import { SAVE_KEY, Storage } from '../../src/platform/Storage.ts';
 import {
-  deferredSupplyPath, deferredSupplySeed, lossPath, lossSeed, moveSupplyPath, moveSupplySeed, supplyPath, supplySeed,
+  lossPath, lossSeed, moveSupplyPath, moveSupplySeed, supplyPath, supplySeed,
 } from '../support/endless-fixtures.ts';
 import { simulateEndless } from '../support/endless-simulation.ts';
 
@@ -75,9 +75,13 @@ test('stock is added behind occupied front rows, revealed once and undone with s
   assert.deepEqual(restored.board[shelf].front, rear);
 });
 
-test('an ordinary move can deliver a 2+1 triple after enough successful moves', () => {
+test('six ordinary moves trigger a compact delivery after the full candidate hits its budget', () => {
   const session = EndlessSession.start(moveSupplySeed);
-  for (const move of moveSupplyPath.slice(0, -1)) assert.deepEqual(session.move(move)?.supplied, []);
+  for (const move of moveSupplyPath.slice(0, -1)) {
+    const result = session.move(move)!;
+    assert.deepEqual(result.events, []);
+    assert.deepEqual(result.stock, { status: 'not_due', checks: [] });
+  }
   const before = session.snapshot();
   assert.equal(before.position.moves, 5);
   assert.equal(session.move({ from: { shelf: 0, slot: 3 }, to: { shelf: 1, slot: 0 } }), null);
@@ -85,30 +89,62 @@ test('an ordinary move can deliver a 2+1 triple after enough successful moves', 
   const result = session.move(moveSupplyPath.at(-1)!)!;
   assert.deepEqual(result.events, []);
   const rows = result.supplied.map(shelf => result.board[shelf].stock[0].filter(Boolean));
-  assert.deepEqual(rows.map(row => row.length), [2, 1]);
+  assert.deepEqual(rows.map(row => row.length).sort(), [1, 2]);
+  assert.equal(result.stock.status, 'supplied');
+  assert.deepEqual(result.stock.checks.map(({ size, status }) => [size, status]), [[6, 'limit'], [3, 'solved']]);
+  assert.notDeepEqual(result.stock.checks[0].shelves, result.stock.checks[1].shelves);
+  let replay = result.board;
+  for (const move of result.stockProof!) replay = moveGood(replay, move)!.board;
+  assert.equal(goodsLeft(replay), 0);
   assert.equal(new Set(rows.flat()).size, 1);
   assert.equal(goodsLeft(result.board), goodsLeft(before.position.board) + 3);
   assert.equal(session.snapshot().position.lastSupplyMove, 6);
   assert.equal(session.score, before.position.matches * 100);
 });
 
-test('a budget-limited candidate defers delivery and a subsequent ordinary move can accept one', () => {
-  const session = EndlessSession.start(deferredSupplySeed);
-  for (const move of deferredSupplyPath.slice(0, 4)) assert.ok(session.move(move));
-  const previous = session.snapshot();
-  const move = deferredSupplyPath[4];
-  const settled = moveGood(session.board, move)!;
-  const deferred = session.move(move)!;
-  assert.equal(deferred.stockCheck, 'limit');
-  assert.deepEqual(deferred.supplied, []);
-  assert.deepEqual(deferred.board, settled.board);
-  assert.equal(session.snapshot().position.lastSupplyMove, previous.position.lastSupplyMove);
-  assert.notEqual(session.snapshot().position.randomState, previous.position.randomState);
-  const retry = session.move(deferredSupplyPath[5])!;
-  assert.deepEqual(retry.events, []);
-  assert.equal(retry.stockCheck, 'solved');
-  assert.equal(retry.supplied.length, 2);
-  assert.equal(session.snapshot().position.lastSupplyMove, 6);
+test('ordinary moves still advance the clock when a full reserve blocks deliveries', () => {
+  const session = EndlessSession.start(moveSupplySeed);
+  for (const move of moveSupplyPath) assert.ok(session.move(move));
+  const before = session.snapshot().position;
+  const a = { shelf: 0, slot: 0 };
+  const b = { shelf: 5, slot: 2 };
+  for (let index = 0; index < 40; index++) {
+    const result = session.move(index % 2 ? { from: b, to: a } : { from: a, to: b })!;
+    assert.deepEqual(result.events, []);
+    assert.equal(result.stock.status, index < 5 ? 'not_due' : 'stock_cap');
+    assert.deepEqual(result.stock.checks, []);
+  }
+  assert.deepEqual(session.snapshot().position, { ...before, moves: 46 });
+});
+
+test('a match-triggered delivery stays due across a save and succeeds after an ordinary reveal frees space', () => {
+  const start = EndlessSession.start(1).snapshot();
+  const board: Board = [
+    { front: ['tea', 'tea', null], stock: [] },
+    { front: ['tea', 'jam', null], stock: [['jam', null, null]] },
+    { front: ['cocoa', null, null], stock: [['cocoa', null, null]] },
+    { front: ['pear', null, null], stock: [['pear', 'pear', null]] },
+    { front: ['cocoa', null, null], stock: [] },
+    { front: ['jam', null, null], stock: [] },
+  ];
+  const session = EndlessSession.restore({ ...start, position: { ...start.position, board, moves: 1, matches: 1 } })!;
+  const match = session.move({ from: { shelf: 1, slot: 0 }, to: { shelf: 0, slot: 2 } })!;
+  assert.equal(match.stock.status, 'stock_cap');
+  assert.equal(session.snapshot().position.lastSupplyMove, 0);
+  assert.equal(session.snapshot().position.randomState, start.position.randomState);
+
+  const saved = JSON.parse(JSON.stringify(session.snapshot()));
+  const resumed = EndlessSession.restore(saved)!;
+  const reveal = { from: { shelf: 2, slot: 0 }, to: { shelf: 0, slot: 2 } };
+  const result = resumed.move(reveal)!;
+  assert.deepEqual(result.events, [{ type: 'reveal', shelf: 2 }]);
+  assert.equal(result.stock.status, 'supplied');
+  assert.equal(resumed.snapshot().position.lastSupplyMove, 3);
+  assert.equal(resumed.score, 200);
+  assert.deepEqual(session.move(reveal), result);
+  assert.ok(resumed.undo());
+  assert.deepEqual(resumed.snapshot(), saved);
+  assert.deepEqual(resumed.move(reveal), result);
 });
 
 test('overlapping triggers accept just one delivery and can still mix two full rows', () => {
@@ -121,8 +157,8 @@ test('overlapping triggers accept just one delivery and can still mix two full r
   const atBothTriggers = EndlessSession.restore({ ...before, position: ready, history: [] })!;
   const move = plan.moves[3];
   const settled = moveGood(atBothTriggers.board, move)!;
-  assert.equal(endlessStockDue(2, 6, 0, false), true);
-  assert.equal(endlessStockDue(2, 4, 2, true), true);
+  assert.equal(endlessStockDue(2, 6, 0), true);
+  assert.equal(endlessStockDue(2, 4, 2), true);
   const result = atBothTriggers.move(move)!;
   assert.equal(result.events.filter(event => event.type === 'match').length, 1);
   assert.equal(result.supplied.length, 2);
@@ -131,12 +167,51 @@ test('overlapping triggers accept just one delivery and can still mix two full r
   assert.equal(atBothTriggers.snapshot().position.lastSupplyMove, 6);
 });
 
-test('deliveries respect the stock row cap and require two occupied shelves without reserve stock', () => {
+test('space diagnostics distinguish the goods cap, stock cap and lack of occupied shelves', () => {
   const occupied = { front: ['tea', null, null], stock: [] } as const;
   const stocked = { front: ['tea', null, null], stock: [['honey', null, null]] } as const;
+  const dense = { front: ['pear', 'tea', 'tea'], stock: [['honey', 'honey', 'pear']] } as const;
   const empty = { front: EMPTY_ROW, stock: [] };
-  assert.equal(addEndlessStock([stocked, stocked, stocked, stocked, occupied, occupied], 1, 1, 20, new Set()), null);
-  assert.equal(addEndlessStock([stocked, stocked, occupied, empty, empty, empty], 1, 1, 20, new Set()), null);
+  const stockedPair = { front: ['tea', null, null], stock: [['honey', 'honey', null]] } as const;
+  const capped: Board = [dense, dense, dense, { front: ['jam', 'jam', null], stock: [['jam', 'milk', 'milk']] },
+    { front: ['milk', null, null], stock: [] }, empty];
+  const stockCapped: Board = [stocked, stockedPair, stocked, stockedPair, occupied, occupied];
+  const noShelves: Board = [stocked, stockedPair, occupied, empty, empty, empty];
+  for (const [board, status] of [[capped, 'no_capacity'], [stockCapped, 'stock_cap'],
+    [noShelves, 'no_eligible_shelves']] as const) {
+    const result = addEndlessStock(board, 1, 7, 0, new Set());
+    assert.deepEqual(result.report, { status, checks: [] });
+    assert.equal(result.board, board);
+    assert.equal(result.randomState, 7);
+  }
+});
+
+test('the stock search distinguishes a budget limit from an exhaustive deadlock', () => {
+  const deadlock: Board = [
+    { front: ['jam', 'jam', 'tea'], stock: [] }, { front: ['jam', 'tea', 'tea'], stock: [] },
+  ];
+  assert.equal(solveStock(deadlock, 0).status, 'limit');
+  assert.equal(solveStock(deadlock, 42).status, 'unsolvable');
+});
+
+test('a PR #15 save remembers a budget-limited delivery and retries without another match', () => {
+  const old = EndlessSession.start(moveSupplySeed);
+  for (const move of moveSupplyPath.slice(0, 5)) assert.ok(old.move(move));
+  const { seed, version, position, history } = old.snapshot();
+  // PR #15 rejected its only candidate on move six, after advancing Mulberry32.
+  const board = moveGood(position.board, moveSupplyPath[5])!.board;
+  const saved = { seed, version, history: [...history, position],
+    position: { ...position, moves: 6, board, randomState: 248188488 } };
+  const session = EndlessSession.restore(JSON.parse(JSON.stringify(saved)))!;
+  assert.deepEqual(session.snapshot(), saved);
+  const move = { from: { shelf: 1, slot: 0 }, to: { shelf: 0, slot: 1 } };
+  const delivery = session.move(move)!;
+  assert.deepEqual(delivery.events, []);
+  assert.equal(delivery.stock.status, 'supplied');
+  assert.equal(session.snapshot().position.lastSupplyMove, 7);
+  assert.ok(session.undo());
+  assert.deepEqual(session.snapshot(), saved);
+  assert.deepEqual(session.move(move), delivery);
 });
 
 test('a poor move loses only once the final automatic reveal fills the last free slot', () => {

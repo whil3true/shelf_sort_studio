@@ -32,6 +32,23 @@ function keyOf(board: Board, shelfKeys: WeakMap<Shelf, string>): string {
   }).sort().join('|');
 }
 
+function stockPriority(board: Board, frontBias: WeakMap<Shelf, number>): number {
+  let bias = 0;
+  for (const shelf of board) {
+    let cached = frontBias.get(shelf);
+    if (cached === undefined) {
+      const [a, b, c] = shelf.front;
+      const occupied = Number(a !== null) + Number(b !== null) + Number(c !== null);
+      const hasPair = (a && (a === b || a === c)) || (b && b === c);
+      // Prefer freeing hidden stock and preparing triples with room for the third item.
+      cached = occupied * (shelf.stock.length ? 0.9 : 0.3) - (hasPair ? (occupied === 2 ? 1.7 : 0.7) : 0);
+      frontBias.set(shelf, cached);
+    }
+    bias += cached;
+  }
+  return bias;
+}
+
 function* successors(board: Board) {
   for (let source = 0; source < board.length; source++) {
     const used = new Set<string>();
@@ -78,10 +95,22 @@ function pop(queue: Node[]): Node {
   return first;
 }
 
+export function solveStock(board: Board, budget: number): SearchResult {
+  return search(board, budget, 4, stockPriority);
+}
+
 export function solve(board: Board, budget = 25_000, remainingWeight = 1.4): SearchResult {
+  return search(board, budget, remainingWeight);
+}
+
+function search(
+  board: Board, budget: number, remainingWeight: number,
+  priority?: (board: Board, cache: WeakMap<Shelf, number>) => number,
+): SearchResult {
   const remaining = goodsLeft(board);
   const queue: Node[] = [{ board, remaining, score: 0, depth: 0 }];
   const shelfKeys = new WeakMap<Shelf, string>();
+  const frontBias = new WeakMap<Shelf, number>();
   const seen = new Map([[keyOf(board, shelfKeys), 0]]);
   let visited = 0;
 
@@ -101,7 +130,8 @@ export function solve(board: Board, budget = 25_000, remainingWeight = 1.4): Sea
       if ((seen.get(key) ?? Infinity) <= depth) continue;
       seen.set(key, depth);
       const count = node.remaining - next.events.filter(event => event.type === 'match').length * 3;
-      push(queue, { board: next.board, remaining: count, depth, score: depth + count * remainingWeight, parent: node, move: next.move });
+      const score = depth + count * remainingWeight + (priority?.(next.board, frontBias) ?? 0);
+      push(queue, { board: next.board, remaining: count, depth, score, parent: node, move: next.move });
     }
   }
   return { status: 'unsolvable', visited };
