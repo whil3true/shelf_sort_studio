@@ -1,0 +1,154 @@
+import { GOODS, goodsLeft, moveGood, type Board, type Move, type MoveResult, type Row } from './Board.ts';
+import { addEndlessStock, dealEndless, ENDLESS_SHELVES, MAX_ENDLESS_GOODS, MAX_ENDLESS_STOCK } from './EndlessStock.ts';
+
+const HISTORY_LIMIT = 8;
+const POINTS_PER_MATCH = 100;
+
+interface Position {
+  readonly board: Board;
+  readonly matches: number;
+  readonly randomState: number;
+  readonly lastSupply: number;
+}
+
+interface EndlessSave {
+  readonly seed: number;
+  readonly position: Position;
+  readonly history: readonly Position[];
+}
+
+export interface EndlessMove extends MoveResult {
+  readonly supplied: readonly number[];
+  readonly redealt: boolean;
+}
+
+export function hasLegalMove(board: Board): boolean {
+  // Every settled front item may move to any empty front slot, including on its own shelf.
+  return board.some(shelf => shelf.front.some(Boolean)) && board.some(shelf => shelf.front.includes(null));
+}
+
+export class EndlessSession {
+  readonly seed: number;
+  private position: Position;
+  private readonly history: Position[];
+
+  private constructor(seed: number, position: Position, history: Position[]) {
+    this.seed = seed;
+    this.position = position;
+    this.history = history;
+  }
+
+  static start(seed: number) {
+    const position = { ...dealEndless(seed), matches: 0, lastSupply: 0 };
+    return new EndlessSession(seed, position, []);
+  }
+
+  static restore(value: unknown): EndlessSession | null {
+    if (!record(value) || !unsigned(value.seed) || !validPosition(value.position)) return null;
+    const { position, history } = value;
+    if (!Array.isArray(history) || history.length > HISTORY_LIMIT) return null;
+    let later = position;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const entry: unknown = history[i];
+      if (!validPosition(entry) || !hasLegalMove(entry.board) || entry.matches > later.matches
+        || entry.lastSupply > later.lastSupply) return null;
+      later = entry;
+    }
+    return new EndlessSession(value.seed, position, history);
+  }
+
+  get board(): Board { return this.position.board; }
+  get matches(): number { return this.position.matches; }
+  get score(): number { return this.matches * POINTS_PER_MATCH; }
+  get lost(): boolean { return !hasLegalMove(this.board) && goodsLeft(this.board) > 0; }
+  get canUndo(): boolean { return this.history.length > 0; }
+
+  snapshot(): EndlessSave {
+    return { seed: this.seed, position: this.position, history: [...this.history] };
+  }
+
+  move(move: Move): EndlessMove | null {
+    const result = moveGood(this.board, move);
+    if (!result) return null;
+    const cleared = new Set<number>();
+    let removed = 0;
+    for (const event of result.events) {
+      if (event.type !== 'match') continue;
+      cleared.add(event.shelf);
+      removed++;
+    }
+
+    this.history.push(this.position);
+    if (this.history.length > HISTORY_LIMIT) this.history.shift();
+
+    let { board } = result;
+    const matches = this.matches + removed;
+    let { lastSupply, randomState } = this.position;
+    let supplied: readonly number[] = [];
+    const redealt = goodsLeft(board) === 0;
+    if (redealt) {
+      ({ board, randomState } = dealEndless(this.seed, randomState, matches));
+      lastSupply = matches;
+    } else if (removed && hasLegalMove(board)) {
+      const supply = addEndlessStock(board, this.seed, randomState, matches, matches - lastSupply, cleared);
+      if (supply) {
+        ({ board, supplied, randomState } = supply);
+        if (supplied.length) lastSupply = matches;
+      }
+    }
+    this.position = { board, matches, randomState, lastSupply };
+    return { board, events: result.events, supplied, redealt };
+  }
+
+  undo(): boolean {
+    const previous = this.history.pop();
+    if (!previous) return false;
+    this.position = previous;
+    return true;
+  }
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonnegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function unsigned(value: unknown): value is number {
+  return nonnegative(value) && value <= 0xffffffff;
+}
+
+function validRow(value: unknown): value is Row {
+  return Array.isArray(value) && value.length === 3
+    && value.every(good => good === null || GOODS.includes(good))
+    && !(value[0] && value[0] === value[1] && value[0] === value[2]);
+}
+
+function validPosition(value: unknown): value is Position {
+  if (!record(value) || !nonnegative(value.matches) || value.matches > Number.MAX_SAFE_INTEGER / POINTS_PER_MATCH
+    || !unsigned(value.randomState) || !nonnegative(value.lastSupply) || value.lastSupply > value.matches
+    || !Array.isArray(value.board) || value.board.length !== ENDLESS_SHELVES) return false;
+
+  const counts = new Map<string, number>();
+  let stock = 0;
+  let total = 0;
+  for (const shelf of value.board) {
+    if (!record(shelf) || !validRow(shelf.front) || !Array.isArray(shelf.stock) || shelf.stock.length > 1) return false;
+    stock += shelf.stock.length;
+    if (shelf.stock.length && !shelf.front.some(Boolean)) return false;
+    for (const back of shelf.stock) {
+      if (!validRow(back) || !back.every(Boolean)) return false;
+    }
+    for (const row of [shelf.front, ...shelf.stock] as Row[]) {
+      for (const good of row) {
+        if (!good) continue;
+        total++;
+        counts.set(good, (counts.get(good) ?? 0) + 1);
+      }
+    }
+  }
+  return total > 0 && total <= MAX_ENDLESS_GOODS && stock <= MAX_ENDLESS_STOCK
+    && [...counts.values()].every(count => count % 3 === 0);
+}

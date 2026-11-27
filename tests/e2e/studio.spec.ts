@@ -3,6 +3,8 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { expect, test, type Page } from '@playwright/test';
 import type Phaser from 'phaser';
 import type { AudioEffect } from '../../src/audio/AudioAssetManifest.ts';
+import { EndlessSession } from '../../src/game/EndlessSession.ts';
+import { lossPath, lossSeed, supplyPath, supplySeed } from '../support/endless-fixtures.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
@@ -12,7 +14,7 @@ import audioAssets from '../../src/audio/AudioAssets.json' with { type: 'json' }
 
 const saveKey = 'shelf-sort-studio';
 type Snapshot = { locale: string; cleared: number[]; volumes: { music: number; effects: number };
-  active: { level: number; moves: Move[] } | null } | null;
+  active: { level: number; moves: Move[] } | null; endless?: ReturnType<EndlessSession['snapshot']> | null } | null;
 type MockSdk = { calls: string[]; events: Record<string, () => void>;
   interstitial: AdCallbacks[]; rewarded: AdCallbacks[]; shift: number };
 
@@ -426,6 +428,171 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
   await expect(canvas(page, 'Level')).toBeVisible();
 });
 
+
+async function seededEndless(page: Page, seed: number) {
+  await page.addInitScript(seed => {
+    const original = crypto.getRandomValues.bind(crypto);
+    let next = seed;
+    Object.defineProperty(crypto, 'getRandomValues', { value: (buffer: ArrayBufferView) => {
+      if (buffer instanceof Uint32Array && buffer.length === 1) {
+        buffer[0] = next++;
+        return buffer;
+      }
+      return original(buffer);
+    } });
+  }, seed);
+}
+
+async function endlessTurn(page: Page, move: Move, input: 'click' | 'tap' | 'drag' = 'click') {
+  await expect(page.locator('canvas')).toHaveAttribute('aria-busy', 'false');
+  await inputMove(page, move, input, 6);
+}
+
+test('Endless Mode supplies stock, resumes and restores the exact turn with one SDK reward', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await mocked(page, 'ru');
+  await seededEndless(page, supplySeed);
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('shelf-sort-studio')) localStorage.setItem('shelf-sort-studio', JSON.stringify({
+      version: 1, cleared: [1], active: { level: 2, moves: [] },
+    }));
+  });
+  await page.goto('./');
+  await expect(canvas(page, 'Играть')).toBeVisible();
+  await click(page, 240, 481);
+  await expect(canvas(page, 'Бесконечный режим')).toBeVisible();
+  const model = EndlessSession.start(supplySeed);
+  for (const [index, move] of supplyPath.entries()) {
+    expect(model.move(move)).toBeTruthy();
+    await endlessTurn(page, move, index === 0 ? 'drag' : 'click');
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  }
+  const supplied = model.snapshot();
+  expect(supplied.position.lastSupply).toBe(2);
+  await expect(canvas(page, 'Бесконечный режим')).toHaveAttribute('aria-busy', 'false');
+
+  await click(page, 433, 54);
+  await expect(canvas(page, 'Настройки')).toBeVisible();
+  await click(page, 334, 325);
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await click(page, 240, 566);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await click(page, 91, 739);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+
+  await page.reload();
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 481);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(supplied);
+  await click(page, 91, 739);
+  await expect(canvas(page, 'Undo the last move?')).toBeVisible();
+  await click(page, 146, 474);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect(await mockValue(page, mock => mock.rewarded.length)).toBe(0);
+  expect((await readSave(page))?.endless).toEqual(supplied);
+
+  const request = async (count: number) => {
+    await click(page, 91, 739);
+    await expect(canvas(page, 'Undo the last move?')).toBeVisible();
+    await click(page, 333, 474);
+    await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(count);
+    await expect(page.locator('canvas')).toHaveAttribute('aria-busy', 'true');
+    expect(await mockValue(page, mock => mock.calls.at(-1))).toBe('stop');
+  };
+  await request(1);
+  await mockValue(page, mock => {
+    mock.rewarded[0].onClose(false);
+    mock.rewarded[0].onRewarded();
+  });
+  await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
+  expect((await readSave(page))?.endless).toEqual(supplied);
+  await request(2);
+  await mockValue(page, mock => {
+    mock.rewarded[1].onOpen();
+    mock.rewarded[1].onClose(true);
+  });
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(supplied);
+  await request(3);
+  await mockValue(page, mock => {
+    mock.rewarded[2].onOpen();
+    mock.rewarded[2].onError('ad unavailable');
+    mock.rewarded[2].onRewarded();
+    mock.rewarded[2].onClose(true);
+  });
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(supplied);
+
+  await request(4);
+  await click(page, 389, 739);
+  await mockValue(page, mock => {
+    mock.events.game_api_pause();
+    mock.rewarded[3].onOpen();
+    mock.rewarded[3].onRewarded();
+    mock.rewarded[3].onRewarded();
+    mock.rewarded[3].onClose(true);
+    mock.rewarded[3].onClose(true);
+  });
+  expect(model.undo()).toBe(true);
+  await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  expect(await mockValue(page, mock => mock.calls.at(-1))).toBe('stop');
+  await mockValue(page, mock => mock.events.game_api_resume());
+  await expect.poll(() => mockValue(page, mock => mock.calls.at(-1))).toBe('start');
+  await endlessTurn(page, supplyPath.at(-1)!);
+  await expect.poll(async () => (await readSave(page))?.endless).toEqual(supplied);
+  expect((await readSave(page))?.active).toEqual({ level: 2, moves: [] });
+  expect((await readSave(page))?.cleared).toEqual([1]);
+  expect(await mockValue(page, mock => mock.interstitial.length)).toBe(0);
+});
+
+test('Endless Mode settles a real defeat, recovers after reward and starts a new run', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await mocked(page);
+  await seededEndless(page, lossSeed);
+  await page.goto('./');
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 481);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  const model = EndlessSession.start(lossSeed);
+  for (const move of lossPath) {
+    expect(model.move(move)).toBeTruthy();
+    await endlessTurn(page, move);
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  }
+  await expect(canvas(page, 'The shelves are full')).toHaveAttribute('aria-busy', 'false');
+  expect(model.lost).toBe(true);
+  const lost = model.snapshot();
+
+  await page.reload();
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 481);
+  await expect(canvas(page, 'The shelves are full')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(lost);
+  await click(page, 240, 444);
+  await expect(canvas(page, 'Undo the last move?')).toBeVisible();
+  await click(page, 333, 474);
+  await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
+  await mockValue(page, mock => {
+    mock.rewarded[0].onRewarded();
+    mock.rewarded[0].onClose(true);
+  });
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect(model.undo()).toBe(true);
+  expect((await readSave(page))?.endless).toEqual(model.snapshot());
+  await endlessTurn(page, lossPath.at(-1)!);
+  await expect(canvas(page, 'The shelves are full')).toBeVisible();
+  await click(page, 240, 574);
+  await expect(canvas(page, 'Play')).toBeVisible();
+  await click(page, 240, 481);
+  await expect(canvas(page, 'The shelves are full')).toBeVisible();
+  await click(page, 240, 509);
+  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  expect((await readSave(page))?.endless?.history).toEqual([]);
+  expect(await mockValue(page, mock => mock.interstitial.length)).toBe(0);
+});
 
 type AudioProbe = {
   decoded: string[];
@@ -932,6 +1099,38 @@ test('settings dim both gutters and safe areas through a live landscape resize',
 
 test.describe('touch emulation', () => {
   test.use({ hasTouch: true, deviceScaleFactor: 2 });
+  test('Endless Mode supports touch and leaves the run intact when standalone has no ads', async ({ page, browserName }) => {
+    if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
+    await page.setViewportSize({ width: 480, height: 800 });
+    await seededEndless(page, supplySeed);
+    await page.goto('./');
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await tap(page, 240, 481);
+    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    const model = EndlessSession.start(supplySeed);
+    expect(model.move(supplyPath[0])).toBeTruthy();
+    await endlessTurn(page, supplyPath[0], 'tap');
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+    await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-busy', 'false');
+
+    await tap(page, 91, 739);
+    await expect(canvas(page, 'Undo the last move?')).toBeVisible();
+    await tap(page, 333, 474);
+    await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
+    expect((await readSave(page))?.endless).toEqual(model.snapshot());
+
+    await tap(page, 240, 739);
+    await expect(canvas(page, 'Start a new run?')).toBeVisible();
+    await tap(page, 146, 474);
+    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    expect((await readSave(page))?.endless).toEqual(model.snapshot());
+    await tap(page, 240, 739);
+    await expect(canvas(page, 'Start a new run?')).toBeVisible();
+    await tap(page, 333, 474);
+    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    expect((await readSave(page))?.endless?.history).toEqual([]);
+  });
+
   test('taps and native drag place goods', async ({ page, browserName }) => {
     if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
     if (audioAssets.enabled) await observeNativeAudio(page);

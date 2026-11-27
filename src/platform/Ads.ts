@@ -41,7 +41,7 @@ export class Ads {
           onClose: wasShown => {
             if (settled) return;
             shown ||= wasShown === true;
-            finish(true);
+            finish(wasShown !== false);
           },
           onError: () => finish(),
           onOffline: () => finish(),

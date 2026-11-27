@@ -1,3 +1,4 @@
+import { EndlessSession } from '../game/EndlessSession.ts';
 import { levelById, LEVELS, type Level } from '../game/Levels.ts';
 import { Session } from '../game/Session.ts';
 import type { Move, Slot } from '../game/Board.ts';
@@ -6,16 +7,18 @@ export type Locale = 'ru' | 'en';
 export interface Volumes { music: number; effects: number }
 interface Run { level: number; moves: readonly Move[] }
 interface Save {
-  version: 1;
+  version: 2;
   locale: Locale | null;
   volumes: Volumes;
   cleared: number[];
   active: Run | null;
+  endless: ReturnType<EndlessSession['snapshot']> | null;
+  endlessRecord: number;
 }
 
 export const SAVE_KEY = 'shelf-sort-studio';
 const fresh = (): Save => ({
-  version: 1, locale: null, volumes: { music: 0.65, effects: 0.8 }, cleared: [], active: null,
+  version: 2, endless: null, endlessRecord: 0, locale: null, volumes: { music: 0.65, effects: 0.8 }, cleared: [], active: null,
 });
 
 function object(value: unknown): Record<string, unknown> | null {
@@ -47,6 +50,7 @@ export class Storage {
   private state: Save = fresh();
   private readonly backend?: Pick<globalThis.Storage, 'getItem' | 'setItem'>;
   private restored: Session | null = null;
+  private endless: EndlessSession | null = null;
 
   constructor(backend?: Pick<globalThis.Storage, 'getItem' | 'setItem'>) {
     this.backend = backend;
@@ -54,7 +58,7 @@ export class Storage {
       const raw = backend?.getItem(SAVE_KEY);
       if (!raw) return;
       const data = object(JSON.parse(raw));
-      if (data?.version !== 1) return;
+      if (data?.version !== 1 && data?.version !== 2) return;
       const levels = Array.isArray(data.cleared) ? new Set(data.cleared) : new Set();
       const unlocked = LEVELS.findIndex(level => !levels.has(level.id));
       this.state.cleared = LEVELS.slice(0, unlocked < 0 ? LEVELS.length : unlocked).map(level => level.id);
@@ -67,6 +71,12 @@ export class Storage {
       if (level && this.isUnlocked(level.id) && Array.isArray(active?.moves)) {
         this.restored = restore(level, active.moves);
         if (this.restored) this.state.active = { level: level.id, moves: this.restored.moves };
+      }
+      if (data.version === 2) {
+        this.endless = EndlessSession.restore(data.endless);
+        this.state.endless = this.endless?.snapshot() ?? null;
+        const best = data.endlessRecord;
+        if (typeof best === 'number' && Number.isSafeInteger(best) && best >= 0) this.state.endlessRecord = best;
       }
     } catch {
       // An inaccessible browser store still allows an in-memory session.
@@ -98,6 +108,26 @@ export class Storage {
       this.state.active = { level, moves: session.moves };
       this.restored = session;
     }
+    this.persist();
+  }
+
+  get endlessRun(): EndlessSession | null { return this.endless; }
+
+  get endlessBest(): number {
+    return Math.max(this.state.endlessRecord, this.endless?.score ?? 0);
+  }
+
+  startEndless(seed = crypto.getRandomValues(new Uint32Array(1))[0]): EndlessSession {
+    this.state.endlessRecord = this.endlessBest;
+    const session = EndlessSession.start(seed);
+    this.endless = session;
+    this.saveEndless(session);
+    return session;
+  }
+
+  saveEndless(session: EndlessSession): void {
+    if (session !== this.endless) return;
+    this.state.endless = session.snapshot();
     this.persist();
   }
 

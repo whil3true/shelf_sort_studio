@@ -1,7 +1,8 @@
 import Phaser from 'phaser';
 import { EMPTY_ROW, GOODS, goodAt, goodsLeft, sameSlot, type Board, type BoardEvent, type Good, type Move, type Slot } from '../game/Board.ts';
+import { EndlessSession, type EndlessMove } from '../game/EndlessSession.ts';
 import { LEVELS, levelById } from '../game/Levels.ts';
-import type { Session } from '../game/Session.ts';
+import { Session } from '../game/Session.ts';
 import type { SearchResult } from '../game/Solver.ts';
 import type { AudioEffect } from '../audio/AudioAssetManifest.ts';
 import type { Storage, Locale } from '../platform/Storage.ts';
@@ -21,8 +22,8 @@ export interface StudioHost {
   reward(): Promise<boolean>;
 }
 
-type Screen = 'menu' | 'levels' | 'game' | 'victory';
-type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint';
+type Screen = 'menu' | 'levels' | 'game' | 'victory' | 'defeat';
+type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint' | 'rewardedUndo';
 interface Gesture {
   id: number; x: number; y: number; origin: Slot | null; dragging: boolean;
 }
@@ -34,6 +35,8 @@ interface ReturningItem {
 }
 interface BoardMotion {
   readonly events: ReadonlyMap<number, BoardEvent>;
+  readonly stock?: ReadonlySet<number>;
+  readonly redealt?: boolean;
   readonly render: ((progress: number) => void)[];
   progress: number;
 }
@@ -50,7 +53,7 @@ export class StudioScene extends Phaser.Scene {
   private modal: Modal | null = null;
   private chapter = 0;
   private level = 1;
-  private session: Session | null = null;
+  private session: Session | EndlessSession | null = null;
   private selected: Slot | null = null;
   private gesture: Gesture | null = null;
   private returning: ReturningItem | null = null;
@@ -181,9 +184,18 @@ export class StudioScene extends Phaser.Scene {
     this.draw();
   }
 
+  private get endless(): EndlessSession | null {
+    return this.session instanceof EndlessSession ? this.session : null;
+  }
+
   private syncScreenLabel = () => {
-    const label = { menu: this.tr('play'), levels: this.tr('chapters'), game: this.tr('level'), victory: this.tr('won') }[this.screen];
-    this.game.canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : label);
+    const label = { menu: 'play', levels: 'chapters', game: this.endless ? 'endless' : 'level',
+      victory: 'won', defeat: 'endlessLost' } as const;
+    const canvas = this.game.canvas;
+    canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : this.tr(label[this.screen]));
+    canvas.setAttribute('aria-busy', String(this.animation || this.busy));
+    if (this.notice) canvas.setAttribute('aria-description', this.tr(this.notice));
+    else canvas.removeAttribute('aria-description');
   };
 
   private draw() {
@@ -193,11 +205,13 @@ export class StudioScene extends Phaser.Scene {
     // Phaser registers the new input zones during PRE_UPDATE, before exposing the screen.
     this.events.off(Phaser.Scenes.Events.PRE_UPDATE, this.syncScreenLabel);
     this.events.once(Phaser.Scenes.Events.PRE_UPDATE, this.syncScreenLabel);
-    this.host.playing(this.screen === 'game' && !this.modal && !this.busy && !this.session?.won);
+    const finished = this.session instanceof Session ? this.session.won : this.endless?.lost;
+    this.host.playing(this.screen === 'game' && !this.modal && !this.busy && !finished);
     if (this.screen === 'menu') this.drawMenu();
     else if (this.screen === 'levels') this.drawLevels();
     else if (this.screen === 'game') this.drawGame();
-    else this.drawVictory();
+    else if (this.screen === 'victory') this.drawVictory();
+    else this.drawDefeat();
     if (this.busy) {
       this.view.backdrop(0.6);
       this.view.surface('panel', 240, 400, 345, 120);
@@ -220,7 +234,11 @@ export class StudioScene extends Phaser.Scene {
     const refreshed = this.refreshed(logo);
     view.image(logo, 240, 134, refreshed ? 352 : 400, refreshed ? 144 : 142);
     view.label(this.tr('theme'), 240, 220, 18, { color: mutedInk, weight: 600 });
-    view.image('shop', 240, 376, 372, 230);
+    view.image('shop', 240, 340, 341, 211);
+    const run = this.store.endlessRun;
+    view.button(240, 481, 382, 74, this.tr('endless'), () => this.openEndless(), {
+      size: 23, caption: run ? this.tr(run.lost ? 'results' : 'resume') : undefined,
+    });
     view.button(240, 553, 382, 67, this.tr('play'), () => {
       this.chapter = Math.floor(((this.store.currentLevel ?? this.store.nextLevel ?? 18) - 1) / 6);
       this.go('levels');
@@ -279,17 +297,34 @@ export class StudioScene extends Phaser.Scene {
     this.go('game');
   }
 
+  private openEndless(restart = false) {
+    const session = (restart ? null : this.store.endlessRun) ?? this.store.startEndless();
+    this.session = session;
+    this.go(session.lost ? 'defeat' : 'game');
+  }
+
+  private points(value: number): string {
+    return value.toLocaleString(this.locale);
+  }
+
   private drawGame() {
     const view = this.view;
     const board = this.beforeAnimation ?? this.session!.board;
     const dragged = this.gesture?.dragging ? this.gesture.origin : null;
     const lifted = dragged ?? this.returning?.origin;
     const moving = dragged ?? this.selected;
-    this.header(`${this.tr('level')} ${String(this.level).padStart(2, '0')}`, () => this.go('levels'), true);
-    view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 17, { color: mutedInk, weight: 600 });
-    const intro: TextKey = this.level === 1 ? 'intro' : this.level <= 3 ? 'pair' : this.level <= 6 ? 'hidden' : 'goal';
-    view.surface('notice', 240, 147, 427, 58);
-    view.label(this.tr(intro), 240, 147, 18, { wrap: 397 });
+    const endless = this.endless;
+    if (endless) {
+      this.header(this.tr('endless'), () => this.go('menu'), true);
+      this.drawEndlessScores(endless, 115);
+      view.label(this.tr('endlessIntro'), 240, 170, 17, { wrap: 405 });
+    } else {
+      this.header(`${this.tr('level')} ${String(this.level).padStart(2, '0')}`, () => this.go('levels'), true);
+      view.label(this.tr(CHAPTERS[this.chapter]), 240, 93, 17, { color: mutedInk, weight: 600 });
+      const intro: TextKey = this.level === 1 ? 'intro' : this.level <= 3 ? 'pair' : this.level <= 6 ? 'hidden' : 'goal';
+      view.surface('notice', 240, 147, 427, 58);
+      view.label(this.tr(intro), 240, 147, 18, { wrap: 397 });
+    }
     for (const [index, shelf] of board.entries()) {
       const { x, y } = this.shelfPosition(index, board.length);
       view.image('shelf', x, y, 216, 136);
@@ -300,7 +335,7 @@ export class StudioScene extends Phaser.Scene {
         if (!good) return;
         const at = this.slotPosition({ shelf: index, slot }, board.length);
         const item = view.image(`stock-${good}`, at.x + rearOffset.x, at.y + rearOffset.y, rearSize, rearSize);
-        if (revealing) this.trackMotion(progress => item.setAlpha(progress));
+        if (revealing || this.motion?.stock?.has(index)) this.trackMotion(progress => item.setAlpha(progress));
       });
 
       if (event?.type === 'match') {
@@ -342,6 +377,8 @@ export class StudioScene extends Phaser.Scene {
           });
         } else if (event?.type === 'match') {
           this.trackMotion(progress => item.setY(at.y - 20 * progress).setAlpha(1 - progress));
+        } else if (this.motion?.redealt) {
+          this.trackMotion(progress => item.setAlpha(progress));
         }
       });
     }
@@ -353,12 +390,13 @@ export class StudioScene extends Phaser.Scene {
       if (good) this.ghost = view.image(good, x, y, size, size);
     }
 
-    const deadlocked = !board.some(shelf => shelf.front.includes(null)) && goodsLeft(board) > 0;
+    const deadlocked = !endless && !board.some(shelf => shelf.front.includes(null)) && goodsLeft(board) > 0;
     if (this.notice || deadlocked) view.label(this.tr(this.notice ?? 'noSpace'), 240, 674, 17, { wrap: 424, color: '#853f31' });
     const controls: [TextKey, Icon, () => void, boolean][] = [
-      ['undo', 'undo', () => this.undo(), this.session!.canUndo],
+      ['undo', 'undo', () => this.offerUndo(), this.session!.canUndo],
       ['restart', 'restart', () => this.overlay('restart'), true],
-      ['hint', 'hint', () => this.overlay('hint'), this.host.rewardedAvailable],
+      endless ? ['exit', 'back', () => this.go('menu'), true]
+        : ['hint', 'hint', () => this.overlay('hint'), this.host.rewardedAvailable],
     ];
     controls.forEach(([text, icon, action, live], i) => view.button(91 + i * 149, 739, 139, 59,
       this.tr(text), () => { if (!this.animation) action(); }, { icon, size: 17, live: live && !this.animation }));
@@ -496,16 +534,18 @@ export class StudioScene extends Phaser.Scene {
   private commitMove(move: Move): boolean {
     const session = this.session!;
     const previous = session.board;
-    const result = session.move(move);
+    const stock = session instanceof EndlessSession ? session.move(move) : null;
+    const result = session instanceof Session ? session.move(move) : stock;
     if (!result) return false;
 
     this.selected = null;
     this.hint = null;
     this.notice = null;
-    this.store.saveRun(this.level, session);
+    if (session instanceof EndlessSession) this.store.saveEndless(session);
+    else this.store.saveRun(this.level, session);
     if (!result.events.length) {
       this.host.audio('item_place');
-      this.draw();
+      this.finishMove();
       return true;
     }
 
@@ -518,18 +558,18 @@ export class StudioScene extends Phaser.Scene {
       if (move.to.shelf === index) front[move.to.slot] = landed;
       return { ...shelf, front };
     });
-    this.animateBoard(boardAnimationStages(result.events));
+    this.animateBoard(boardAnimationStages(result.events), stock);
     return true;
   }
 
-  private animateBoard(stages: ReturnType<typeof boardAnimationStages>, previousEffect: AudioEffect | null = null) {
+  private animateBoard(
+    stages: ReturnType<typeof boardAnimationStages>, stock: EndlessMove | null, previousEffect: AudioEffect | null = null,
+  ) {
     const stage = stages.next();
     if (stage.done) {
       this.beforeAnimation = null;
-      this.motion = null;
-      this.animation = false;
-      if (this.session!.won) void this.completeLevel();
-      else this.draw();
+      if (stock?.supplied.length || stock?.redealt) this.animateStock(stock);
+      else this.finishMove();
       return;
     }
 
@@ -556,19 +596,90 @@ export class StudioScene extends Phaser.Scene {
           const [front, ...stock] = shelf.stock;
           return { front, stock };
         });
-        this.animateBoard(stages, effect);
+        this.animateBoard(stages, stock, effect);
       },
     });
   }
 
-  private undo() {
-    if (!this.session?.undo()) return;
-    this.store.saveRun(this.level, this.session);
+  private animateStock(stock: EndlessMove) {
+    const shelves = stock.redealt ? stock.board.map((_, index) => index) : stock.supplied;
+    const motion: BoardMotion = {
+      events: new Map(), stock: new Set(shelves), redealt: stock.redealt, progress: 0, render: [],
+    };
+    this.motion = motion;
+    this.draw();
+    this.tweens.addCounter({
+      from: 0, to: 1, duration: 175, ease: 'Sine.Out',
+      onUpdate: tween => {
+        motion.progress = tween.getValue() ?? 0;
+        motion.render.forEach(render => render(motion.progress));
+      },
+      onComplete: () => this.finishMove(),
+    });
+  }
+
+  private finishMove() {
+    this.motion = null;
+    this.animation = false;
+    if (this.endless?.lost) this.go('defeat');
+    else if (this.session instanceof Session && this.session.won) void this.completeLevel();
+    else this.draw();
+  }
+
+  private offerUndo() {
+    const session = this.session;
+    if (!session?.canUndo) return;
+    if (session instanceof EndlessSession) {
+      this.overlay('rewardedUndo');
+      return;
+    }
+    session.undo();
+    this.store.saveRun(this.level, session);
     this.returning = null;
     this.selected = null;
     this.hint = null;
     this.notice = null;
     this.draw();
+  }
+
+  private async requestUndo() {
+    const session = this.endless;
+    if (!session?.canUndo || this.busy || this.blocked) return;
+    this.busy = true;
+    this.draw();
+    const rewarded = await this.host.reward();
+    this.busy = false;
+    this.modal = null;
+    if (session === this.endless && rewarded && session.undo()) {
+      this.store.saveEndless(session);
+      this.go('game');
+    } else {
+      this.notice = 'noAd';
+      this.draw();
+    }
+  }
+
+  private drawEndlessScores(session: EndlessSession, y: number, width = 424) {
+    const offset = width / 4;
+    const text = { weight: 800, wrap: width / 2 - 18 } as const;
+    this.view.surface('notice', 240, y, width, 56);
+    this.view.label(`${this.tr('score')} · ${this.points(session.score)}`, 240 - offset, y, 20, text);
+    this.view.label(`${this.tr('best')} · ${this.points(this.store.endlessBest)}`, 240 + offset, y, 20, text);
+  }
+
+  private drawDefeat() {
+    const view = this.view;
+    const session = this.endless!;
+    view.surface('panel', 240, 400, 420, 525);
+    view.label(this.tr('endlessLost'), 240, 195, 37, { weight: 800, wrap: 368 });
+    view.label(this.tr('endlessLostText'), 240, 249, 21, { wrap: 358, color: mutedInk });
+    this.drawEndlessScores(session, 315, 351);
+    view.label(`${this.tr('matches')} · ${this.points(session.matches)}`, 240, 373, 22, { weight: 700 });
+    view.button(240, 444, 351, 59, this.tr('undoAd'), () => this.offerUndo(),
+      { icon: 'undo', live: session.canUndo });
+    view.button(240, 509, 351, 59, this.tr('newRun'), () => this.openEndless(true), { kind: 'honey' });
+    view.button(240, 574, 351, 55, this.tr('mainMenu'), () => this.go('menu'), { icon: 'back' });
+    if (this.notice) view.label(this.tr(this.notice), 240, 628, 17, { wrap: 364, color: '#853f31' });
   }
 
   private async completeLevel() {
@@ -590,7 +701,8 @@ export class StudioScene extends Phaser.Scene {
 
   private modalLabel(modal: Modal): string {
     const labels: Record<Modal, TextKey> = { settings: 'settings', help: 'help',
-      restart: 'restartTitle', replace: 'replaceTitle', hint: 'hintTitle' };
+      restart: this.endless ? 'endlessRestart' : 'restartTitle', replace: 'replaceTitle', hint: 'hintTitle',
+      rewardedUndo: 'undoTitle' };
     return this.tr(labels[modal]);
   }
 
@@ -627,19 +739,23 @@ export class StudioScene extends Phaser.Scene {
     }
     view.surface('panel', 240, 400, 430, 284);
     view.label(this.modalLabel(modal), 240, 319, 29, { weight: 800 });
-    const details = { restart: 'restartText', replace: 'replaceText', hint: 'hintText' } as const;
+    const details = { restart: this.endless ? 'endlessRestartText' : 'restartText', replace: 'replaceText',
+      hint: 'hintText', rewardedUndo: 'undoText' } as const;
     view.label(this.tr(details[modal]), 240, 389, 20, { wrap: 340 });
     view.button(146, 474, 169, 57, this.tr('cancel'), () => this.overlay(null), { size: 18 });
-    view.button(333, 474, 169, 57, this.tr(modal === 'hint' ? 'watch' : modal === 'restart' ? 'restart' : 'play'),
+    const rewarded = modal === 'hint' || modal === 'rewardedUndo';
+    view.button(333, 474, 169, 57, this.tr(rewarded ? 'watch' : modal === 'restart' ? 'restart' : 'play'),
       () => {
         if (modal === 'replace') this.open(this.pendingLevel);
         if (modal === 'hint') void this.requestHint();
-        if (modal === 'restart') {
-          this.session!.restart();
-          this.store.saveRun(this.level, this.session!);
+        if (modal === 'rewardedUndo') void this.requestUndo();
+        if (modal === 'restart' && this.endless) this.openEndless(true);
+        else if (modal === 'restart' && this.session instanceof Session) {
+          this.session.restart();
+          this.store.saveRun(this.level, this.session);
           this.overlay(null);
         }
-      }, { kind: modal === 'hint' ? 'honey' : 'clay', size: 18 });
+      }, { kind: rewarded ? 'honey' : 'clay', size: 18 });
   }
 
   private slider(channel: 'music' | 'effects', y: number) {
@@ -673,7 +789,7 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private async requestHint() {
-    if (!this.session || this.busy || this.blocked) return;
+    if (!(this.session instanceof Session) || this.busy || this.blocked) return;
     const session = this.session;
     this.busy = true;
     this.draw();

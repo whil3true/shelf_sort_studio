@@ -1,4 +1,4 @@
-import { goodsLeft, moveGood, type Board, type Move, type Row } from './Board.ts';
+import { goodsLeft, moveGood, type Board, type Move, type Row, type Shelf } from './Board.ts';
 
 export type SearchResult =
   | { status: 'solved'; moves: readonly Move[]; visited: number }
@@ -17,9 +17,16 @@ function rowKey(row: Row): string {
   return [...row].map(good => good ?? '').sort().join(',');
 }
 
-function keyOf(board: Board): string {
+function keyOf(board: Board, shelfKeys: WeakMap<Shelf, string>): string {
+  // Moves share untouched shelves, so each immutable shelf only needs encoding once per search.
   // Slot order and shelf positions are cosmetic. The order of stock rows is not.
-  return board.map(shelf => [shelf.front, ...shelf.stock].map(rowKey).join('/')).sort().join('|');
+  return board.map(shelf => {
+    const cached = shelfKeys.get(shelf);
+    if (cached !== undefined) return cached;
+    const key = [shelf.front, ...shelf.stock].map(rowKey).join('/');
+    shelfKeys.set(shelf, key);
+    return key;
+  }).sort().join('|');
 }
 
 function* successors(board: Board) {
@@ -71,13 +78,14 @@ function pop(queue: Node[]): Node {
 export function solve(board: Board, budget = 25_000, remainingWeight = 1.4): SearchResult {
   const remaining = goodsLeft(board);
   const queue: Node[] = [{ board, remaining, score: 0, depth: 0 }];
-  const seen = new Map([[keyOf(board), 0]]);
+  const shelfKeys = new WeakMap<Shelf, string>();
+  const seen = new Map([[keyOf(board, shelfKeys), 0]]);
   let visited = 0;
 
   while (queue.length) {
     if (visited >= budget) return { status: 'limit', visited };
     const node = pop(queue);
-    if (seen.get(keyOf(node.board)) !== node.depth) continue;
+    if (seen.get(keyOf(node.board, shelfKeys)) !== node.depth) continue;
     visited++;
     if (node.remaining === 0) {
       const moves: Move[] = [];
@@ -86,7 +94,7 @@ export function solve(board: Board, budget = 25_000, remainingWeight = 1.4): Sea
     }
     const depth = node.depth + 1;
     for (const next of successors(node.board)) {
-      const key = keyOf(next.board);
+      const key = keyOf(next.board, shelfKeys);
       if ((seen.get(key) ?? Infinity) <= depth) continue;
       seen.set(key, depth);
       const count = node.remaining - next.events.filter(event => event.type === 'match').length * 3;

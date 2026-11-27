@@ -21,7 +21,8 @@
     "verify": "npm test && npm run build && npm run validate",
     "release": "npm run build && npm run release:zip",
     "release:zip": "python3 scripts/check-release.py --zip",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:endless": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/simulate-endless.mjs"
   },
   "dependencies": {
     "@fontsource-variable/nunito": "5.3.0",
