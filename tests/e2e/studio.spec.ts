@@ -16,7 +16,8 @@ import audioAssets from '../../src/audio/AudioAssets.json' with { type: 'json' }
 
 const saveKey = 'shelf-sort-studio';
 type Snapshot = { locale: string; cleared: number[]; volumes: { music: number; effects: number };
-  active: { level: number; moves: Move[] } | null; endless?: ReturnType<EndlessSession['snapshot']> | null } | null;
+  active: { level: number; moves: Move[] } | null; endless?: ReturnType<EndlessSession['snapshot']> | null;
+  endlessRecord?: number } | null;
 type MockSdk = { calls: string[]; events: Record<string, () => void>;
   interstitial: AdCallbacks[]; rewarded: AdCallbacks[]; shift: number };
 
@@ -88,11 +89,30 @@ function readSave(page: Page): Promise<Snapshot> {
   return page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null'), saveKey);
 }
 
+async function observeCanvasText(page: Page) {
+  await page.addInitScript(() => {
+    window.canvasText = [];
+    const fillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      window.canvasText.push(text);
+      fillText.call(this, text, x, y, maxWidth);
+    };
+  });
+}
+
+function takeCanvasText(page: Page): Promise<string[]> {
+  return page.evaluate(() => window.canvasText.splice(0).filter((text, index, lines) => text !== lines[index - 1]));
+}
+
+async function openCampaign(page: Page) {
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 590);
+  await expect(canvas(page, 'Campaign')).toBeVisible();
+}
+
 async function enter(page: Page) {
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 553);
-  await expect(canvas(page, 'Choose a level')).toBeVisible();
-  await click(page, 142, 350);
+  await openCampaign(page);
+  await click(page, 240, 337);
   await expect(canvas(page, 'Level')).toBeVisible();
 }
 
@@ -144,16 +164,17 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   page.on('pageerror', error => errors.push(error.message));
   page.on('response', response => { if (response.status() >= 400) errors.push(response.url()); });
   await page.goto('./');
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 338, 703);
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 338, 687);
   await expect(canvas(page, 'How to play')).toBeVisible();
   await click(page, 240, 614);
 
-  await click(page, 240, 553);
-  await expect(canvas(page, 'Choose a level')).toBeVisible();
+  await openCampaign(page);
+  await click(page, 240, 420);
+  await expect(canvas(page, 'Level selection')).toBeVisible();
   await click(page, 379, 148);
   await click(page, 142, 350);
-  await expect(canvas(page, 'Choose a level')).toBeVisible();
+  await expect(canvas(page, 'Level selection')).toBeVisible();
   expect(await readSave(page)).toBeNull();
   await click(page, 101, 148);
   await click(page, 142, 350);
@@ -167,9 +188,7 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   await inputMove(page, move, 'drag');
   await expect.poll(async () => (await readSave(page))?.active?.moves).toEqual([move]);
   await page.reload();
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 621);
-  await expect(canvas(page, 'Level')).toBeVisible();
+  await enter(page);
   await click(page, 91, 739);
   expect((await readSave(page))?.active?.moves).toEqual([]);
   await inputMove(page, move, 'click');
@@ -188,6 +207,89 @@ test('menu, chapter locks, drag, tap, valid save, reload, undo, restart and vict
   if (!audioAssets.enabled) expect(audioRequests).toEqual([]);
 });
 
+test('campaign opens the next level, resumes its moves and preserves them when a switch is cancelled', async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 800 });
+  await observeCanvasText(page);
+  await mocked(page, 'ru');
+  const cleared = LEVELS.slice(0, 10).map(level => level.id);
+  await page.addInitScript(({ key, cleared }) => {
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, cleared }));
+  }, { key: saveKey, cleared });
+  await page.goto('./');
+  await expect(canvas(page, 'Главное меню')).toBeVisible();
+  expect(await takeCanvasText(page)).toEqual(['Каждый товар на своём месте', 'Аркада', 'Кампания', 'Настройки', 'Как играть']);
+  await expect(page).toHaveTitle('Порядок на полках');
+  await expect(page.locator('main')).toHaveAttribute('aria-label', 'Порядок на полках');
+  await click(page, 338, 687);
+  await expect(canvas(page, 'Как играть')).toBeVisible();
+  expect((await takeCanvasText(page)).join(' ').replace(/\s+/g, ' ')).toContain('В аркаде для отмены хода');
+  await click(page, 240, 614);
+  await expect(canvas(page, 'Главное меню')).toBeVisible();
+  await click(page, 240, 590);
+  await expect(canvas(page, 'Кампания')).toBeVisible();
+  expect(await takeCanvasText(page)).toContain('Играть');
+  await click(page, 240, 337);
+  await expect(canvas(page, 'Уровень')).toBeVisible();
+  const { id, board, solution: [move] } = LEVELS[10];
+  expect((await readSave(page))?.active).toEqual({ level: id, moves: [] });
+  await inputMove(page, move, 'click', board.length);
+  await expect(canvas(page, 'Уровень')).toHaveAttribute('aria-busy', 'false');
+  const active = { level: id, moves: [move] };
+  expect((await readSave(page))?.active).toEqual(active);
+  await click(page, 47, 54);
+  await expect(canvas(page, 'Выбор уровня')).toBeVisible();
+  await click(page, 47, 54);
+  await expect(canvas(page, 'Кампания')).toBeVisible();
+  expect(await takeCanvasText(page)).toContain('Продолжить · Уровень 11');
+  await click(page, 240, 420);
+  await expect(canvas(page, 'Выбор уровня')).toBeVisible();
+  await click(page, 338, 492);
+  await expect(canvas(page, 'Сменить уровень?')).toBeVisible();
+  await click(page, 146, 474);
+  await expect(canvas(page, 'Выбор уровня')).toBeVisible();
+  expect((await readSave(page))?.active).toEqual(active);
+  await click(page, 47, 54);
+  await expect(canvas(page, 'Кампания')).toBeVisible();
+  await click(page, 240, 503);
+  await expect(canvas(page, 'Главное меню')).toBeVisible();
+  await click(page, 142, 687);
+  await expect(canvas(page, 'Настройки')).toBeVisible();
+  await click(page, 334, 325);
+  await expect(canvas(page, 'Settings')).toBeVisible();
+  await click(page, 240, 566);
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  expect(await takeCanvasText(page)).toEqual(expect.arrayContaining(['Every item in its place', 'Arcade', 'Campaign']));
+  await expect(page).toHaveTitle('Shelf Sort Studio');
+  await expect(page.locator('main')).toHaveAttribute('aria-label', 'Shelf Sort Studio');
+  await openCampaign(page);
+  expect(await takeCanvasText(page)).toContain('Continue · Level 11');
+  await click(page, 240, 337);
+  await expect(canvas(page, 'Level')).toBeVisible();
+  expect((await readSave(page))?.active).toEqual(active);
+  await click(page, 91, 739);
+  expect((await readSave(page))?.active).toEqual({ level: id, moves: [] });
+});
+
+test('a completed campaign offers level selection and can replay level 18', async ({ page }) => {
+  await observeCanvasText(page);
+  const cleared = LEVELS.map(level => level.id);
+  await page.addInitScript(({ key, cleared }) => {
+    localStorage.setItem(key, JSON.stringify({ version: 2, cleared }));
+  }, { key: saveKey, cleared });
+  await page.goto('./');
+  await openCampaign(page);
+  const text = await takeCanvasText(page);
+  expect(text).toContain('You cleared all 18 levels.');
+  expect(text).not.toContain('Play');
+  await click(page, 240, 337);
+  await expect(canvas(page, 'Campaign')).toBeVisible();
+  await click(page, 240, 420);
+  await expect(canvas(page, 'Level selection')).toBeVisible();
+  await click(page, 338, 628);
+  await expect(canvas(page, 'Level')).toBeVisible();
+  expect(await readSave(page)).toMatchObject({ cleared, active: { level: 18, moves: [] } });
+});
+
 test('production loads one texture per art ID and both local font subsets before the menu', async ({ page }) => {
   const responses = new Map<string, { status: number; mime: string }[]>();
   page.on('response', response => {
@@ -198,7 +300,7 @@ test('production loads one texture per art ID and both local font subsets before
     responses.set(path, history);
   });
   await page.goto('./');
-  await expect(canvas(page, 'Play')).toBeVisible();
+  await expect(canvas(page, 'Main menu')).toBeVisible();
   for (const { webp, fallback } of ART_REFRESH) {
     const installed = existsSync(new URL(`../../dist/${webp}`, import.meta.url));
     const expected = installed ? webp : fallback;
@@ -274,9 +376,7 @@ test('stock sits behind the front slots, advances on reveal and restores with Un
     }));
   }, saveKey);
   await page.goto('./');
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 621);
-  await expect(canvas(page, 'Level')).toBeVisible();
+  await enter(page);
 
   const sample = async (shelf: number, x: number, y: number, width: number, height: number) => {
     const middle = slotPoint({ shelf, slot: 1 }, board.length);
@@ -349,20 +449,18 @@ test('stock sits behind the front slots, advances on reveal and restores with Un
   await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(true);
 
   await page.reload();
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 621);
-  await expect(canvas(page, 'Level')).toBeVisible();
+  await enter(page);
   await expect.poll(async () => (await stockShelf()).equals(revealed)).toBe(true);
 });
 
 test('SDK locale precedes the first frame and manual language and both volume controls survive reload', async ({ page }) => {
   await mocked(page, 'ru');
   await page.goto('./');
-  await expect(canvas(page, 'Играть')).toBeVisible();
-  await expect.poll(() => titleInk(page, 'Играть')).toBeGreaterThan(250);
+  await expect(canvas(page, 'Главное меню')).toBeVisible();
+  await expect.poll(() => titleInk(page, 'Главное меню')).toBeGreaterThan(250);
   await expect(page.locator('html')).toHaveAttribute('lang', 'ru');
   await expect.poll(() => mockValue(page, mock => mock.calls)).toEqual(['init', 'ready']);
-  await click(page, 142, 703);
+  await click(page, 142, 687);
   await expect(canvas(page, 'Настройки')).toBeVisible();
   await click(page, 334, 325);
   await expect(canvas(page, 'Settings')).toBeVisible();
@@ -374,8 +472,8 @@ test('SDK locale precedes the first frame and manual language and both volume co
   expect(save?.volumes.music).toBeCloseTo(0.25, 1);
   expect(save?.volumes.effects).toBeCloseTo(0.75, 1);
   await page.reload();
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await expect.poll(() => titleInk(page, 'Play')).toBeGreaterThan(250);
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await expect.poll(() => titleInk(page, 'Main menu')).toBeGreaterThan(250);
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   expect((await readSave(page))?.volumes).toEqual(save?.volumes);
 });
@@ -462,9 +560,9 @@ test('a plain move animates a partial rear row in its own slots at 480×800', as
   await page.setViewportSize({ width: 480, height: 800 });
   await seededEndless(page, moveSupplySeed);
   await page.goto('./');
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 481);
-  const screen = canvas(page, 'Endless Mode');
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  const screen = canvas(page, 'Arcade');
   await expect(screen).toBeVisible();
 
   const model = EndlessSession.start(moveSupplySeed);
@@ -520,7 +618,7 @@ test('a plain move animates a partial rear row in its own slots at 480×800', as
   expect(model.board[shelf]).toEqual({ front: rear, stock: [] });
 });
 
-test('Endless Mode supplies stock, resumes and restores the exact turn with one SDK reward', async ({ page }) => {
+test('Arcade supplies stock, resumes and restores the exact turn with one SDK reward', async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 800 });
   await mocked(page, 'ru');
   await seededEndless(page, supplySeed);
@@ -530,9 +628,9 @@ test('Endless Mode supplies stock, resumes and restores the exact turn with one 
     }));
   });
   await page.goto('./');
-  await expect(canvas(page, 'Играть')).toBeVisible();
-  await click(page, 240, 481);
-  await expect(canvas(page, 'Бесконечный режим')).toBeVisible();
+  await expect(canvas(page, 'Главное меню')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Аркада')).toBeVisible();
   const model = EndlessSession.start(supplySeed);
   for (const [index, move] of supplyPath.entries()) {
     expect(model.move(move)).toBeTruthy();
@@ -541,28 +639,34 @@ test('Endless Mode supplies stock, resumes and restores the exact turn with one 
   }
   const supplied = model.snapshot();
   expect(supplied.position.lastSupply).toBe(2);
-  await expect(canvas(page, 'Бесконечный режим')).toHaveAttribute('aria-busy', 'false');
+  await expect(canvas(page, 'Аркада')).toHaveAttribute('aria-busy', 'false');
 
   await click(page, 433, 54);
   await expect(canvas(page, 'Настройки')).toBeVisible();
   await click(page, 334, 325);
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await click(page, 240, 566);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
   await click(page, 91, 739);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
 
+  await click(page, 47, 54);
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(supplied);
+
   await page.reload();
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 481);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   expect((await readSave(page))?.endless).toEqual(supplied);
   await click(page, 91, 739);
   await expect(canvas(page, 'Undo the last move?')).toBeVisible();
   await click(page, 146, 474);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   expect(await mockValue(page, mock => mock.rewarded.length)).toBe(0);
   expect((await readSave(page))?.endless).toEqual(supplied);
 
@@ -579,14 +683,14 @@ test('Endless Mode supplies stock, resumes and restores the exact turn with one 
     mock.rewarded[0].onClose(false);
     mock.rewarded[0].onRewarded();
   });
-  await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
+  await expect(canvas(page, 'Arcade')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
   expect((await readSave(page))?.endless).toEqual(supplied);
   await request(2);
   await mockValue(page, mock => {
     mock.rewarded[1].onOpen();
     mock.rewarded[1].onClose(true);
   });
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   expect((await readSave(page))?.endless).toEqual(supplied);
   await request(3);
   await mockValue(page, mock => {
@@ -595,7 +699,7 @@ test('Endless Mode supplies stock, resumes and restores the exact turn with one 
     mock.rewarded[2].onRewarded();
     mock.rewarded[2].onClose(true);
   });
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   expect((await readSave(page))?.endless).toEqual(supplied);
 
   await request(4);
@@ -620,14 +724,18 @@ test('Endless Mode supplies stock, resumes and restores the exact turn with one 
   expect(await mockValue(page, mock => mock.interstitial.length)).toBe(0);
 });
 
-test('Endless Mode settles a real defeat, recovers after reward and starts a new run', async ({ page }) => {
+test('Arcade offers rewarded Undo at defeat and retires the finished run when leaving', async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 800 });
   await mocked(page);
   await seededEndless(page, lossSeed);
+  await observeCanvasText(page);
+  await page.addInitScript(key => {
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, endlessRecord: 300 }));
+  }, saveKey);
   await page.goto('./');
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 481);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   const model = EndlessSession.start(lossSeed);
   for (const move of lossPath) {
     expect(model.move(move)).toBeTruthy();
@@ -636,13 +744,7 @@ test('Endless Mode settles a real defeat, recovers after reward and starts a new
   }
   await expect(canvas(page, 'The shelves are full')).toHaveAttribute('aria-busy', 'false');
   expect(model.lost).toBe(true);
-  const lost = model.snapshot();
-
-  await page.reload();
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 481);
-  await expect(canvas(page, 'The shelves are full')).toBeVisible();
-  expect((await readSave(page))?.endless).toEqual(lost);
+  expect((await takeCanvasText(page)).join(' ')).toContain('There are no moves left. Score · 0 Best score · 300');
   await click(page, 240, 444);
   await expect(canvas(page, 'Undo the last move?')).toBeVisible();
   await click(page, 333, 474);
@@ -651,19 +753,63 @@ test('Endless Mode settles a real defeat, recovers after reward and starts a new
     mock.rewarded[0].onRewarded();
     mock.rewarded[0].onClose(true);
   });
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
+  await expect(canvas(page, 'Arcade')).toBeVisible();
   expect(model.undo()).toBe(true);
   expect((await readSave(page))?.endless).toEqual(model.snapshot());
   await endlessTurn(page, lossPath.at(-1)!);
   await expect(canvas(page, 'The shelves are full')).toBeVisible();
+  await takeCanvasText(page);
   await click(page, 240, 574);
-  await expect(canvas(page, 'Play')).toBeVisible();
-  await click(page, 240, 481);
-  await expect(canvas(page, 'The shelves are full')).toBeVisible();
-  await click(page, 240, 509);
-  await expect(canvas(page, 'Endless Mode')).toBeVisible();
-  expect((await readSave(page))?.endless?.history).toEqual([]);
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  expect(await takeCanvasText(page)).not.toContain('CONTINUE');
+  expect(await readSave(page)).toMatchObject({ endless: null, endlessRecord: 300 });
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  expect(await readSave(page)).toMatchObject({
+    endless: EndlessSession.start(lossSeed + 1).snapshot(), endlessRecord: 300,
+  });
+  await page.reload();
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  expect((await readSave(page))?.endless).toEqual(EndlessSession.start(lossSeed + 1).snapshot());
   expect(await mockValue(page, mock => mock.interstitial.length)).toBe(0);
+});
+
+test('Arcade retains the final score when starting over or reloading a lost save', async ({ page }) => {
+  await seededEndless(page, lossSeed + 1);
+  const model = EndlessSession.start(lossSeed);
+  for (const move of lossPath.slice(0, -1)) expect(model.move(move)).toBeTruthy();
+  const scored = model.snapshot();
+  const beforeLoss = { ...scored, position: { ...scored.position, matches: 3 } };
+  await page.addInitScript(({ key, endless }) => {
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, endless }));
+  }, { key: saveKey, endless: beforeLoss });
+  await page.goto('./');
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  await endlessTurn(page, lossPath.at(-1)!);
+  await expect(canvas(page, 'The shelves are full')).toBeVisible();
+  const lost = (await readSave(page))?.endless;
+  expect(lost?.position.matches).toBe(3);
+  await click(page, 240, 509);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  expect(await readSave(page)).toMatchObject({
+    endless: EndlessSession.start(lossSeed + 1).snapshot(), endlessRecord: 300,
+  });
+
+  await page.evaluate(({ key, endless }) => {
+    localStorage.setItem(key, JSON.stringify({ version: 2, endless, endlessRecord: 100 }));
+  }, { key: saveKey, endless: lost });
+  await page.reload();
+  await expect(canvas(page, 'Main menu')).toBeVisible();
+  expect(await readSave(page)).toMatchObject({ endless: null, endlessRecord: 300 });
+  await click(page, 240, 501);
+  await expect(canvas(page, 'Arcade')).toBeVisible();
+  expect(await readSave(page)).toMatchObject({
+    endless: EndlessSession.start(lossSeed + 1).snapshot(), endlessRecord: 300,
+  });
 });
 
 type AudioProbe = {
@@ -678,7 +824,7 @@ type AudioProbe = {
   screens: string[];
 };
 declare global {
-  interface Window { studioAudio: AudioProbe }
+  interface Window { studioAudio: AudioProbe; canvasText: string[] }
 }
 
 async function observeNativeAudio(page: Page) {
@@ -829,23 +975,28 @@ test.describe('original audio playback', () => {
     await mocked(page);
     await observeNativeAudio(page);
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
     await waitForEffects(page);
     expect((await musicState(page)).starts).toBe(0);
 
-    await click(page, 240, 553);
-    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await openCampaign(page);
+    await click(page, 240, 420);
+    await expect(canvas(page, 'Level selection')).toBeVisible();
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(0.1);
     const before = await musicState(page);
     expect(before).toMatchObject({ starts: 1, loop: true, paused: false, error: null });
     await click(page, 142, 350);
     await expect(canvas(page, 'Level')).toBeVisible();
     await click(page, 47, 54);
-    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await expect(canvas(page, 'Level selection')).toBeVisible();
     await click(page, 47, 54);
-    await expect(canvas(page, 'Play')).toBeVisible();
+    await expect(canvas(page, 'Campaign')).toBeVisible();
+    await click(page, 240, 503);
+    await expect(canvas(page, 'Main menu')).toBeVisible();
     const after = await musicState(page);
-    expect(after.screens.slice(-5)).toEqual(['Play', 'Choose a level', 'Level', 'Choose a level', 'Play']);
+    expect(after.screens.slice(-7)).toEqual([
+      'Main menu', 'Campaign', 'Level selection', 'Level', 'Level selection', 'Campaign', 'Main menu',
+    ]);
     expect(after.starts).toBe(1);
     await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(before.time);
 
@@ -921,9 +1072,10 @@ test.describe('original audio playback', () => {
     });
     await observeNativeAudio(page);
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
-    await click(page, 240, 553);
-    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
+    await openCampaign(page);
+    await click(page, 240, 420);
+    await expect(canvas(page, 'Level selection')).toBeVisible();
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
     releaseClickAsset();
     await waitForEffects(page);
@@ -938,7 +1090,7 @@ test.describe('original audio playback', () => {
     await mocked(page);
     await observeNativeAudio(page);
     await openWithStudioAudioProbe(page);
-    await expect(canvas(page, 'Play')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
     await waitForEffects(page);
     await click(page, 24, 24);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
@@ -1021,21 +1173,23 @@ test.describe('original audio playback', () => {
   test('quick valid UI presses each play once while clicks outside live buttons stay silent', async ({ page }) => {
     await observeNativeAudio(page);
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
     await waitForEffects(page);
     await click(page, 24, 24);
     await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
-    const play = await point(page, 240, 553);
-    await page.mouse.dblclick(play.x, play.y);
-    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    const campaign = await point(page, 240, 590);
+    await page.mouse.dblclick(campaign.x, campaign.y);
+    await expect(canvas(page, 'Campaign')).toBeVisible();
     expect(await effectsPlayed(page)).toEqual([audioAssets.files.ui_click]);
+    await click(page, 240, 420);
+    await expect(canvas(page, 'Level selection')).toBeVisible();
     const laterChapter = await point(page, 240, 148);
     const firstChapter = await point(page, 101, 148);
     await page.mouse.click(laterChapter.x, laterChapter.y);
     // Let Phaser register the redrawn input zones.
     await page.evaluate(() => new Promise(requestAnimationFrame));
     await page.mouse.click(firstChapter.x, firstChapter.y);
-    expect(await effectsPlayed(page)).toEqual(Array(3).fill(audioAssets.files.ui_click));
+    expect(await effectsPlayed(page)).toEqual(Array(4).fill(audioAssets.files.ui_click));
   });
 
   test.describe('stock cues', () => {
@@ -1043,10 +1197,10 @@ test.describe('original audio playback', () => {
       await savedForRestock(page);
       await observeNativeAudio(page);
       await openWithStudioAudioProbe(page);
-      await expect(canvas(page, 'Play')).toBeVisible();
+      await expect(canvas(page, 'Main menu')).toBeVisible();
       await waitForEffects(page);
-      await click(page, 240, 481);
-      await expect(canvas(page, 'Endless Mode')).toBeVisible();
+      await click(page, 240, 501);
+      await expect(canvas(page, 'Arcade')).toBeVisible();
       await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
 
       const eventStart = (await audioEvents(page)).length;
@@ -1056,7 +1210,7 @@ test.describe('original audio playback', () => {
       await click(page, from.x, from.y);
       await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart)).toEqual([audioAssets.files.item_pickup]);
       await click(page, to.x, to.y);
-      await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-busy', 'false');
+      await expect(canvas(page, 'Arcade')).toHaveAttribute('aria-busy', 'false');
       const expected: AudioEffect[] = ['item_pickup', 'match_three', 'shelf_reveal'];
       await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart))
         .toEqual(expected.map(effect => audioAssets.files[effect]));
@@ -1097,10 +1251,9 @@ test.describe('original audio playback', () => {
         }, { key: saveKey, id, moves: savedMoves });
         await observeNativeAudio(page);
         await openWithStudioAudioProbe(page);
-        await expect(canvas(page, 'Play')).toBeVisible();
+        await expect(canvas(page, 'Main menu')).toBeVisible();
         await waitForEffects(page);
-        await click(page, 240, 621);
-        await expect(canvas(page, 'Level')).toBeVisible();
+        await enter(page);
         await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
 
         for (const priorMove of history.slice(savedMoves.length)) {
@@ -1144,14 +1297,14 @@ test.describe('high-density canvas', () => {
   test.use({ deviceScaleFactor: 2 });
   test('full-viewport canvas keeps the portrait controls reachable without scrolling or zooming', async ({ page }) => {
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
     for (const [width, height] of [[320, 569], [360, 640], [393, 852], [480, 800], [1280, 800], [852, 393]]) {
       await page.setViewportSize({ width, height });
-      await expect.poll(() => canvas(page, 'Play').boundingBox()).toEqual({ x: 0, y: 0, width, height });
-      await click(page, 142, 703);
+      await expect.poll(() => canvas(page, 'Main menu').boundingBox()).toEqual({ x: 0, y: 0, width, height });
+      await click(page, 142, 687);
       await expect(canvas(page, 'Settings')).toBeVisible();
       await click(page, 240, 566);
-      await expect(canvas(page, 'Play')).toBeVisible();
+      await expect(canvas(page, 'Main menu')).toBeVisible();
       const state = await page.evaluate(() => ({
         horizontal: document.documentElement.scrollWidth, vertical: document.documentElement.scrollHeight,
         backingRatio: document.querySelector('canvas')!.width / document.querySelector('canvas')!.height, zoom: visualViewport?.scale,
@@ -1205,9 +1358,9 @@ test.describe('touch emulation', () => {
     const before = await savedForRestock(page);
     await page.goto('./');
 
-    await expect(canvas(page, 'Play')).toBeVisible();
-    await click(page, 240, 481);
-    const screen = canvas(page, 'Endless Mode');
+    await expect(canvas(page, 'Main menu')).toBeVisible();
+    await click(page, 240, 501);
+    const screen = canvas(page, 'Arcade');
     await expect(screen).toBeVisible();
     const model = EndlessSession.restore(before)!;
     const delivery = model.move(clearForRestock)!;
@@ -1230,8 +1383,8 @@ test.describe('touch emulation', () => {
     const supplied = model.snapshot();
 
     await page.reload();
-    await expect(canvas(page, 'Play')).toBeVisible();
-    await click(page, 240, 481);
+    await expect(canvas(page, 'Main menu')).toBeVisible();
+    await click(page, 240, 501);
     await expect(screen).toBeVisible();
     expect((await readSave(page))?.endless).toEqual(supplied);
     await click(page, 91, 739);
@@ -1252,35 +1405,35 @@ test.describe('touch emulation', () => {
     await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
   });
 
-  test('Endless Mode supports touch and leaves the run intact when standalone has no ads', async ({ page, browserName }) => {
+  test('Arcade supports touch and leaves the run intact when standalone has no ads', async ({ page, browserName }) => {
     if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
     await page.setViewportSize({ width: 480, height: 800 });
     await seededEndless(page, supplySeed);
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
-    await tap(page, 240, 481);
-    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
+    await tap(page, 240, 501);
+    await expect(canvas(page, 'Arcade')).toBeVisible();
     const model = EndlessSession.start(supplySeed);
     expect(model.move(supplyPath[0])).toBeTruthy();
     await endlessTurn(page, supplyPath[0], 'tap');
     await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
-    await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-busy', 'false');
+    await expect(canvas(page, 'Arcade')).toHaveAttribute('aria-busy', 'false');
 
     await tap(page, 91, 739);
     await expect(canvas(page, 'Undo the last move?')).toBeVisible();
     await tap(page, 333, 474);
-    await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
+    await expect(canvas(page, 'Arcade')).toHaveAttribute('aria-description', 'Ad unavailable. Try again later.');
     expect((await readSave(page))?.endless).toEqual(model.snapshot());
 
     await tap(page, 240, 739);
     await expect(canvas(page, 'Start a new run?')).toBeVisible();
     await tap(page, 146, 474);
-    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    await expect(canvas(page, 'Arcade')).toBeVisible();
     expect((await readSave(page))?.endless).toEqual(model.snapshot());
     await tap(page, 240, 739);
     await expect(canvas(page, 'Start a new run?')).toBeVisible();
     await tap(page, 333, 474);
-    await expect(canvas(page, 'Endless Mode')).toBeVisible();
+    await expect(canvas(page, 'Arcade')).toBeVisible();
     expect((await readSave(page))?.endless?.history).toEqual([]);
   });
 
@@ -1288,14 +1441,14 @@ test.describe('touch emulation', () => {
     if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
     if (audioAssets.enabled) await observeNativeAudio(page);
     await page.goto('./');
-    await expect(canvas(page, 'Play')).toBeVisible();
-    await tap(page, 240, 553);
-    await expect(canvas(page, 'Choose a level')).toBeVisible();
+    await expect(canvas(page, 'Main menu')).toBeVisible();
+    await tap(page, 240, 590);
+    await expect(canvas(page, 'Campaign')).toBeVisible();
     if (audioAssets.enabled) {
       await expect.poll(async () => (await musicState(page)).time).toBeGreaterThan(0.1);
       expect((await musicState(page)).starts).toBe(1);
     }
-    await tap(page, 142, 350);
+    await tap(page, 240, 337);
     await expect(canvas(page, 'Level')).toBeVisible();
     const move = LEVELS[0].solution[0];
     await inputMove(page, move, 'tap');

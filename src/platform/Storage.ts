@@ -77,6 +77,7 @@ export class Storage {
         this.state.endless = this.endless?.snapshot() ?? null;
         const best = data.endlessRecord;
         if (typeof best === 'number' && Number.isSafeInteger(best) && best >= 0) this.state.endlessRecord = best;
+        if (this.endless?.lost) this.finishEndless(this.endless);
       }
     } catch {
       // An inaccessible browser store still allows an in-memory session.
@@ -128,6 +129,14 @@ export class Storage {
   saveEndless(session: EndlessSession): void {
     if (session !== this.endless) return;
     this.state.endless = session.snapshot();
+    this.persist();
+  }
+
+  finishEndless(session: EndlessSession): void {
+    if (session !== this.endless || !session.lost) return;
+    this.state.endlessRecord = this.endlessBest;
+    this.endless = null;
+    this.state.endless = null;
     this.persist();
   }
 

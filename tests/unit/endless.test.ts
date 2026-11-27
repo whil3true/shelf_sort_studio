@@ -367,6 +367,40 @@ test('version 1 campaign migrates intact and a corrupt endless run leaves the pr
   assert.equal(restored.isUnlocked(3), false);
 });
 
+test('retiring a lost run saves its record and leaves campaign and settings intact', () => {
+  const session = EndlessSession.start(lossSeed);
+  for (const move of lossPath.slice(0, -1)) assert.ok(session.move(move));
+  const beforeLoss = session.snapshot();
+  const moves = [LEVELS[1].solution[0]];
+  const saved = {
+    version: 2, locale: 'ru', volumes: { music: 0.25, effects: 0.75 },
+    cleared: [1], active: { level: 2, moves },
+    endless: { ...beforeLoss, position: { ...beforeLoss.position, matches: 3 } }, endlessRecord: 100,
+  };
+  let raw = JSON.stringify(saved);
+  const backend = { getItem: () => raw, setItem: (_key: string, value: string) => { raw = value; } };
+  const store = new Storage(backend);
+  const run = store.endlessRun!;
+  store.finishEndless(run);
+  assert.equal(store.endlessRun, run);
+  assert.ok(run.move(lossPath.at(-1)!));
+  assert.ok(run.lost);
+  store.saveEndless(run);
+  const lost = raw;
+  const finished = { ...saved, endless: null, endlessRecord: 300 };
+  store.finishEndless(run);
+  store.saveEndless(run);
+  assert.equal(store.endlessRun, null);
+  assert.deepEqual(JSON.parse(raw), finished);
+
+  raw = lost;
+  const restored = new Storage(backend);
+  assert.equal(restored.endlessRun, null);
+  assert.equal(restored.endlessBest, 300);
+  assert.deepEqual(restored.open(2)?.moves, moves);
+  assert.deepEqual(JSON.parse(raw), finished);
+});
+
 test('a PR #14 save preserves full stock, random state and Undo history while rebuilding its delivery clock', () => {
   const oldSession = EndlessSession.start(supplySeed);
   for (const move of supplyPath.slice(0, 3)) oldSession.move(move);
