@@ -676,6 +676,12 @@ test.describe('original audio playback', () => {
     const moveSounds = [files.item_pickup, files.item_place];
     await inputMove(page, move, 'drag');
     expect((await effectsPlayed(page)).slice(beforeControls)).toEqual(moveSounds);
+    const nextMove = level.solution[1];
+    await inputMove(page, nextMove, 'click');
+    expect((await readSave(page))?.active?.moves).toEqual([move, nextMove]);
+    expect((await effectsPlayed(page)).slice(beforeControls)).toEqual([...moveSounds, ...moveSounds]);
+    await click(page, 91, 739);
+    expect((await readSave(page))?.active?.moves).toEqual([move]);
     await click(page, 91, 739);
     expect((await readSave(page))?.active?.moves).toEqual([]);
     await inputMove(page, move, 'click');
@@ -685,7 +691,8 @@ test.describe('original audio playback', () => {
     await expect(canvas(page, 'Level')).toBeVisible();
     expect((await readSave(page))?.active?.moves).toEqual([]);
     expect((await effectsPlayed(page)).slice(beforeControls)).toEqual([
-      ...moveSounds, files.ui_click, ...moveSounds, files.ui_click, files.ui_click,
+      ...moveSounds, ...moveSounds, files.ui_click, files.ui_click,
+      ...moveSounds, files.ui_click, files.ui_click,
     ]);
 
     await mockValue(page, mock => { mock.shift = 91_000; });
@@ -729,25 +736,34 @@ test.describe('original audio playback', () => {
   });
 
   test.describe('stock cues', () => {
-    const scenarios: { title: string; id: number; matches: boolean; setup: Move[] }[] = [
-      { title: 'one reveal', id: 6, matches: false, setup: [] },
+    const scenarios: {
+      title: string; id: number; matches: boolean; setup: Move[]; moveIndex?: number; playSetup?: boolean;
+    }[] = [
+      { title: 'last item moved from a shelf with one rear row', id: 6, matches: false, setup: [] },
+      {
+        title: 'last item moved from a shelf with two rear rows',
+        id: 10, matches: false, setup: [], moveIndex: 1, playSetup: true,
+      },
       { title: 'match then reveal', id: 7, matches: true, setup: [] },
+      { title: 'match on a shelf with two rear rows', id: 18, matches: true, setup: [], moveIndex: 1 },
       {
         title: 'match then two simultaneous reveals', id: 7, matches: true,
         setup: [{ from: { shelf: 0, slot: 1 }, to: { shelf: 1, slot: 0 } }],
       },
     ];
-    for (const { title, id, matches, setup } of scenarios) {
+    for (const { title, id, matches, setup, moveIndex = 0, playSetup = false } of scenarios) {
       test(`${title} plays one rear-row cue with no overlapping pickup sample`, async ({ page }) => {
         const files = audioAssets.files;
         const level = LEVELS[id - 1];
-        const move = level.solution[0];
+        const move = level.solution[moveIndex];
+        const history = [...setup, ...level.solution.slice(0, moveIndex)];
+        const savedMoves = playSetup ? setup : history;
         await page.addInitScript(({ key, id, moves }) => {
           localStorage.setItem(key, JSON.stringify({
             version: 1, locale: 'en', cleared: Array.from({ length: id - 1 }, (_, i) => i + 1),
             active: { level: id, moves },
           }));
-        }, { key: saveKey, id, moves: setup });
+        }, { key: saveKey, id, moves: savedMoves });
         await observeNativeAudio(page);
         await page.goto('./');
         await expect(canvas(page, 'Play')).toBeVisible();
@@ -756,17 +772,26 @@ test.describe('original audio playback', () => {
         await expect(canvas(page, 'Level')).toBeVisible();
         await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
 
+        for (const priorMove of history.slice(savedMoves.length)) {
+          const start = (await effectsPlayed(page)).length;
+          await inputMove(page, priorMove, 'click', level.board.length);
+          expect((await effectsPlayed(page)).slice(start)).toEqual([files.item_pickup, files.item_place]);
+        }
         const start = (await effectsPlayed(page)).length;
         await inputMove(page, move, 'click', level.board.length);
-        const expected = [files.item_pickup, files.item_place, ...(matches ? [files.match_three] : []), files.shelf_reveal];
+        const expected = [
+          files.item_pickup,
+          ...(matches ? [files.item_place, files.match_three] : []),
+          files.shelf_reveal,
+        ];
         await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual(expected);
-        expect((await readSave(page))?.active?.moves).toEqual([...setup, move]);
+        expect((await readSave(page))?.active?.moves).toEqual([...history, move]);
 
         // Undo is disabled until the complete reveal animation has settled.
         await expect.poll(async () => {
           await click(page, 91, 739);
           return (await readSave(page))?.active?.moves;
-        }).toEqual(setup);
+        }).toEqual(history);
         expect((await effectsPlayed(page)).slice(start)).toEqual([...expected, files.ui_click]);
         expect(await page.evaluate(() => window.studioAudio.sharedClipOverlaps)).toBe(0);
       });
