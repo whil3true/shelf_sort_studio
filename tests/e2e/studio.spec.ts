@@ -445,6 +445,14 @@ async function seededEndless(page: Page, seed: number) {
   }, seed);
 }
 
+async function savedForRestock(page: Page) {
+  const position = restockSave();
+  await page.addInitScript(({ key, endless }) => {
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, endless }));
+  }, { key: saveKey, endless: position });
+  return position;
+}
+
 async function endlessTurn(page: Page, move: Move, input: 'click' | 'tap' | 'drag' = 'click') {
   await expect(page.locator('canvas')).toHaveAttribute('aria-busy', 'false');
   await inputMove(page, move, input, 6);
@@ -1031,6 +1039,34 @@ test.describe('original audio playback', () => {
   });
 
   test.describe('stock cues', () => {
+    test('a mixed delivery after a match plays one cue without overlap', async ({ page }) => {
+      await savedForRestock(page);
+      await observeNativeAudio(page);
+      await openWithStudioAudioProbe(page);
+      await expect(canvas(page, 'Play')).toBeVisible();
+      await waitForEffects(page);
+      await click(page, 240, 481);
+      await expect(canvas(page, 'Endless Mode')).toBeVisible();
+      await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+
+      const eventStart = (await audioEvents(page)).length;
+      const effectStart = (await effectsPlayed(page)).length;
+      const from = slotPoint(clearForRestock.from, 6);
+      const to = slotPoint(clearForRestock.to, 6);
+      await click(page, from.x, from.y);
+      await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart)).toEqual([audioAssets.files.item_pickup]);
+      await click(page, to.x, to.y);
+      await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-busy', 'false');
+      const expected: AudioEffect[] = ['item_pickup', 'match_three', 'shelf_reveal'];
+      await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart))
+        .toEqual(expected.map(effect => audioAssets.files[effect]));
+      expect((await audioEvents(page)).slice(eventStart)).toEqual(expected);
+      expect(await page.evaluate(() => ({
+        pickup: window.studioAudio.sharedClipOverlaps,
+        match: window.studioAudio.matchRevealOverlaps,
+      }))).toEqual({ pickup: 0, match: 0 });
+    });
+
     const scenarios: {
       title: string; id: number; matches: boolean; setup: Move[]; moveIndex?: number; playSetup?: boolean;
     }[] = [
@@ -1166,21 +1202,13 @@ test.describe('touch emulation', () => {
   test('a cleared shelf receives visible goods, which can move and survive reload and rewarded Undo', async ({ page, browserName }) => {
     await page.setViewportSize({ width: 480, height: 800 });
     await mocked(page);
-    const before = restockSave();
-    await page.addInitScript(({ key, endless }) => {
-      if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, endless }));
-    }, { key: saveKey, endless: before });
-    if (audioAssets.enabled) {
-      await observeNativeAudio(page);
-      await openWithStudioAudioProbe(page);
-      await waitForEffects(page);
-    } else await page.goto('./');
+    const before = await savedForRestock(page);
+    await page.goto('./');
 
     await expect(canvas(page, 'Play')).toBeVisible();
     await click(page, 240, 481);
     const screen = canvas(page, 'Endless Mode');
     await expect(screen).toBeVisible();
-    if (audioAssets.enabled) await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
     const model = EndlessSession.restore(before)!;
     const delivery = model.move(clearForRestock)!;
     const front = delivery.board[0].front;
@@ -1193,20 +1221,12 @@ test.describe('touch emulation', () => {
     };
     const clearedShelfBefore = await sample(0);
     const otherShelfBefore = await sample(2);
-    const eventStart = audioAssets.enabled ? (await audioEvents(page)).length : 0;
-    const effectStart = audioAssets.enabled ? (await effectsPlayed(page)).length : 0;
 
     await endlessTurn(page, clearForRestock, 'drag');
     await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
     await expect(screen).toHaveAttribute('aria-busy', 'false');
     expect((await sample(0)).equals(clearedShelfBefore)).toBe(false);
     expect((await sample(2)).equals(otherShelfBefore)).toBe(true);
-    if (audioAssets.enabled) {
-      const expected: AudioEffect[] = ['item_pickup', 'match_three', 'shelf_reveal'];
-      expect((await audioEvents(page)).slice(eventStart)).toEqual(expected);
-      expect((await effectsPlayed(page)).slice(effectStart)).toEqual(expected.map(effect => audioAssets.files[effect]));
-      expect(await page.evaluate(() => window.studioAudio.matchRevealOverlaps)).toBe(0);
-    }
     const supplied = model.snapshot();
 
     await page.reload();
