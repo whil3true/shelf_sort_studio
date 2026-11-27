@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EMPTY_ROW, goodsLeft, moveGood, type Board } from '../../src/game/Board.ts';
 import { EndlessSession, hasLegalMove } from '../../src/game/EndlessSession.ts';
-import { dealEndless } from '../../src/game/EndlessStock.ts';
+import { addEndlessStock, dealEndless, endlessStockDue } from '../../src/game/EndlessStock.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
 import { solve } from '../../src/game/Solver.ts';
 import { SAVE_KEY, Storage } from '../../src/platform/Storage.ts';
-import { lossPath, lossSeed, supplyPath, supplySeed } from '../support/endless-fixtures.ts';
+import {
+  deferredSupplyPath, deferredSupplySeed, lossPath, lossSeed, moveSupplyPath, moveSupplySeed, supplyPath, supplySeed,
+} from '../support/endless-fixtures.ts';
 import { simulateEndless } from '../support/endless-simulation.ts';
 
 test('the seed reproduces its initial position and every difficulty starts with a solvable layout', () => {
@@ -24,8 +26,10 @@ test('planned strategy continues through repeated checked stock deliveries acros
   const sample = simulateEndless(0, 12, 60);
   assert.equal(sample.distinctStarts, 12);
   assert.equal(sample.planned.moves, 720);
-  assert.ok(sample.planned.supplies > 100);
-  assert.ok(sample.planned.supplies > sample.planned.redeals);
+  assert.ok(sample.planned.deliveries.deliveries > 100);
+  assert.ok(sample.planned.deliveries.deliveries > sample.planned.redeals);
+  assert.ok(sample.planned.deliveries.withoutMatch > 0);
+  assert.ok(sample.planned.deliveries.small > 0 && sample.planned.deliveries.full > 0);
   assert.ok(sample.phases.every(phase => phase.turns > 0));
 });
 
@@ -44,6 +48,8 @@ test('stock is added behind occupied front rows, revealed once and undone with s
   assert.equal(session.score, 200);
   assert.equal(session.matches, 2);
   const after = session.snapshot();
+  assert.equal(after.position.lastSupplyMove, after.position.moves);
+  assert.deepEqual(result.supplied.map(shelf => result.board[shelf].stock[0].filter(Boolean).length), [1, 2]);
 
   const shelf = result.supplied[0];
   assert.equal(session.move({ from: { shelf, slot: 3 }, to: move.to }), null);
@@ -69,22 +75,68 @@ test('stock is added behind occupied front rows, revealed once and undone with s
   assert.deepEqual(restored.board[shelf].front, rear);
 });
 
-test('a deferred delivery leaves the settled board intact and retries on a later match', () => {
-  const session = EndlessSession.start(0);
-  const plan = solve(session.board, 3_500, 3);
-  assert.equal(plan.status, 'solved');
-  for (const move of plan.moves.slice(0, 4)) assert.ok(session.move(move));
+test('an ordinary move can deliver a 2+1 triple after enough successful moves', () => {
+  const session = EndlessSession.start(moveSupplySeed);
+  for (const move of moveSupplyPath.slice(0, -1)) assert.deepEqual(session.move(move)?.supplied, []);
+  const before = session.snapshot();
+  assert.equal(before.position.moves, 5);
+  assert.equal(session.move({ from: { shelf: 0, slot: 3 }, to: { shelf: 1, slot: 0 } }), null);
+  assert.deepEqual(session.snapshot(), before);
+  const result = session.move(moveSupplyPath.at(-1)!)!;
+  assert.deepEqual(result.events, []);
+  const rows = result.supplied.map(shelf => result.board[shelf].stock[0].filter(Boolean));
+  assert.deepEqual(rows.map(row => row.length), [2, 1]);
+  assert.equal(new Set(rows.flat()).size, 1);
+  assert.equal(goodsLeft(result.board), goodsLeft(before.position.board) + 3);
+  assert.equal(session.snapshot().position.lastSupplyMove, 6);
+  assert.equal(session.score, before.position.matches * 100);
+});
+
+test('a budget-limited candidate defers delivery and a subsequent ordinary move can accept one', () => {
+  const session = EndlessSession.start(deferredSupplySeed);
+  for (const move of deferredSupplyPath.slice(0, 4)) assert.ok(session.move(move));
   const previous = session.snapshot();
-  const move = plan.moves[4];
+  const move = deferredSupplyPath[4];
   const settled = moveGood(session.board, move)!;
   const deferred = session.move(move)!;
+  assert.equal(deferred.stockCheck, 'limit');
   assert.deepEqual(deferred.supplied, []);
   assert.deepEqual(deferred.board, settled.board);
-  assert.equal(session.snapshot().position.lastSupply, previous.position.lastSupply);
+  assert.equal(session.snapshot().position.lastSupplyMove, previous.position.lastSupplyMove);
   assert.notEqual(session.snapshot().position.randomState, previous.position.randomState);
-  assert.equal(session.lost, false);
-  assert.ok(session.move(plan.moves[5]));
-  assert.equal(session.move(plan.moves[6])?.supplied.length, 2);
+  const retry = session.move(deferredSupplyPath[5])!;
+  assert.deepEqual(retry.events, []);
+  assert.equal(retry.stockCheck, 'solved');
+  assert.equal(retry.supplied.length, 2);
+  assert.equal(session.snapshot().position.lastSupplyMove, 6);
+});
+
+test('overlapping triggers accept just one delivery and can still mix two full rows', () => {
+  const session = EndlessSession.start(5);
+  const plan = solve(session.board, 3_500, 3);
+  assert.equal(plan.status, 'solved');
+  for (const move of plan.moves.slice(0, 3)) assert.ok(session.move(move));
+  const before = session.snapshot();
+  const ready = { ...before.position, moves: 5 };
+  const atBothTriggers = EndlessSession.restore({ ...before, position: ready, history: [] })!;
+  const move = plan.moves[3];
+  const settled = moveGood(atBothTriggers.board, move)!;
+  assert.equal(endlessStockDue(2, 6, 0, false), true);
+  assert.equal(endlessStockDue(2, 4, 2, true), true);
+  const result = atBothTriggers.move(move)!;
+  assert.equal(result.events.filter(event => event.type === 'match').length, 1);
+  assert.equal(result.supplied.length, 2);
+  assert.equal(goodsLeft(result.board) - goodsLeft(settled.board), 6);
+  assert.ok(result.supplied.every(shelf => result.board[shelf].stock[0].every(Boolean)));
+  assert.equal(atBothTriggers.snapshot().position.lastSupplyMove, 6);
+});
+
+test('deliveries respect the stock row cap and require two occupied shelves without reserve stock', () => {
+  const occupied = { front: ['tea', null, null], stock: [] } as const;
+  const stocked = { front: ['tea', null, null], stock: [['honey', null, null]] } as const;
+  const empty = { front: EMPTY_ROW, stock: [] };
+  assert.equal(addEndlessStock([stocked, stocked, stocked, stocked, occupied, occupied], 1, 1, 20, new Set()), null);
+  assert.equal(addEndlessStock([stocked, stocked, occupied, empty, empty, empty], 1, 1, 20, new Set()), null);
 });
 
 test('a poor move loses only once the final automatic reveal fills the last free slot', () => {
@@ -157,6 +209,32 @@ test('version 1 campaign migrates intact and a corrupt endless run leaves the pr
   assert.equal(restored.isUnlocked(3), false);
 });
 
+test('a PR #14 save preserves full stock, random state and Undo history while rebuilding its delivery clock', () => {
+  const oldSession = EndlessSession.start(supplySeed);
+  for (const move of supplyPath.slice(0, 3)) oldSession.move(move);
+  const before = oldSession.snapshot();
+  const stripClock = ({ board, matches, randomState, lastSupply }: typeof before.position) =>
+    ({ board, matches, randomState, lastSupply });
+  // Legacy stock and RNG output for seed 3, after its second match in PR #14.
+  const settled = moveGood(before.position.board, supplyPath[3])!;
+  const oldBoard = settled.board.map((shelf, index) => ({
+    ...shelf, stock: index === 1 ? [['cookie', 'candle', 'cookie']] as const
+      : index === 3 ? [['cookie', 'candle', 'candle']] as const : shelf.stock,
+  }));
+  const oldPosition = { board: oldBoard, matches: 2, lastSupply: 2, randomState: 2079754304 };
+  const raw = JSON.stringify({
+    version: 2, endlessRecord: 1900, locale: 'en', volumes: { music: 0.3, effects: 0.7 },
+    endless: { seed: supplySeed, position: oldPosition, history: [...before.history, before.position].map(stripClock) },
+  });
+  const store = new Storage({ getItem: () => raw, setItem: () => {} });
+  const restored = store.endlessRun!;
+  assert.deepEqual(restored.snapshot().position, { ...oldPosition, moves: 4, lastSupplyMove: 4 });
+  assert.equal(store.endlessBest, 1900);
+  assert.equal(restored.score, 200);
+  assert.equal(restored.undo(), true);
+  assert.deepEqual(restored.snapshot().position, before.position);
+});
+
 test('long sessions keep at most eight undo snapshots and reject invalid generator, board and history data', () => {
   const session = EndlessSession.start(lossSeed);
   for (const move of lossPath.slice(0, -1)) session.move(move);
@@ -167,6 +245,10 @@ test('long sessions keep at most eight undo snapshots and reject invalid generat
     { ...saved, position: { ...saved.position, randomState: Infinity } },
     { ...saved, position: { ...saved.position, lastSupply: 1 } },
     { ...saved, position: { ...saved.position, board: [] } },
+    { ...saved, position: { ...saved.position, moves: -1 } },
+    { ...saved, position: { ...saved.position, lastSupplyMove: saved.position.moves + 1 } },
+    { ...saved, position: { ...saved.position, board: saved.position.board.map((shelf, i) =>
+      i === 0 ? { ...shelf, stock: [EMPTY_ROW] } : shelf) } },
     { ...saved, history: [...saved.history, saved.position] },
   ]) assert.equal(EndlessSession.restore(invalid), null);
   for (let i = 0; i < 8; i++) assert.ok(session.undo());
