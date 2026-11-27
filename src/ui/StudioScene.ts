@@ -22,7 +22,7 @@ export interface StudioHost {
   reward(): Promise<boolean>;
 }
 
-type Screen = 'menu' | 'levels' | 'game' | 'victory' | 'defeat';
+type Screen = 'menu' | 'campaign' | 'levels' | 'game' | 'victory' | 'defeat';
 type Modal = 'settings' | 'help' | 'restart' | 'replace' | 'hint' | 'rewardedUndo';
 interface Gesture {
   id: number; x: number; y: number; origin: Slot | null; dragging: boolean;
@@ -159,6 +159,7 @@ export class StudioScene extends Phaser.Scene {
   private applyLocale() {
     document.documentElement.lang = this.locale;
     document.title = `${this.tr('titleTop')} ${this.tr('titleBottom')}`;
+    this.game.canvas.parentElement?.setAttribute('aria-label', document.title);
   }
 
   private go(screen: Screen) {
@@ -189,7 +190,7 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private syncScreenLabel = () => {
-    const label = { menu: 'play', levels: 'chapters', game: this.endless ? 'endless' : 'level',
+    const label = { menu: 'mainMenu', campaign: 'campaign', levels: 'chapters', game: this.endless ? 'arcade' : 'level',
       victory: 'won', defeat: 'endlessLost' } as const;
     const canvas = this.game.canvas;
     canvas.setAttribute('aria-label', this.modal ? this.modalLabel(this.modal) : this.tr(label[this.screen]));
@@ -208,6 +209,7 @@ export class StudioScene extends Phaser.Scene {
     const finished = this.session instanceof Session ? this.session.won : this.endless?.lost;
     this.host.playing(this.screen === 'game' && !this.modal && !this.busy && !finished);
     if (this.screen === 'menu') this.drawMenu();
+    else if (this.screen === 'campaign') this.drawCampaign();
     else if (this.screen === 'levels') this.drawLevels();
     else if (this.screen === 'game') this.drawGame();
     else if (this.screen === 'victory') this.drawVictory();
@@ -235,19 +237,31 @@ export class StudioScene extends Phaser.Scene {
     view.image(logo, 240, 134, refreshed ? 352 : 400, refreshed ? 144 : 142);
     view.label(this.tr('theme'), 240, 220, 18, { color: mutedInk, weight: 600 });
     view.image('shop', 240, 340, 341, 211);
-    const run = this.store.endlessRun;
-    view.button(240, 481, 382, 74, this.tr('endless'), () => this.openEndless(), {
-      size: 23, caption: run ? this.tr(run.lost ? 'results' : 'resume') : undefined,
+    view.button(240, 501, 382, 74, this.tr('arcade'), () => this.openEndless(), {
+      size: 26, caption: this.store.endlessRun ? this.tr('resume') : undefined,
     });
-    view.button(240, 553, 382, 67, this.tr('play'), () => {
-      this.chapter = Math.floor(((this.store.currentLevel ?? this.store.nextLevel ?? 18) - 1) / 6);
-      this.go('levels');
-    }, { kind: 'honey', size: 27 });
+    view.button(240, 590, 382, 74, this.tr('campaign'), () => this.go('campaign'), { kind: 'honey', size: 26 });
+    view.button(142, 687, 180, 59, this.tr('settings'), () => this.overlay('settings'), { icon: 'settings', size: 20 });
+    view.button(338, 687, 180, 59, this.tr('help'), () => this.overlay('help'), { icon: 'help', size: 20 });
+  }
+
+  private drawCampaign() {
+    const view = this.view;
     const active = this.store.currentLevel;
-    view.button(240, 621, 382, 61, active === null ? this.tr('resume') : `${this.tr('resume')} · ${this.tr('level')} ${active}`,
-      () => { if (active !== null) this.open(active); }, { live: active !== null });
-    view.button(142, 703, 180, 59, this.tr('settings'), () => this.overlay('settings'), { icon: 'settings', size: 20 });
-    view.button(338, 703, 180, 59, this.tr('help'), () => this.overlay('help'), { icon: 'help', size: 20 });
+    const next = active ?? this.store.nextLevel;
+    view.surface('panel', 240, 400, 420, 416);
+    view.label(this.tr('campaign'), 240, 256, 36, { weight: 800 });
+    if (next === null) {
+      view.label(this.tr('wonAllText'), 240, 337, 21, { color: mutedInk });
+    } else {
+      const action = active === null ? this.tr('play') : `${this.tr('resume')} · ${this.tr('level')} ${active}`;
+      view.button(240, 337, 352, 64, action, () => this.open(next), { kind: 'honey', size: 24 });
+    }
+    view.button(240, 420, 352, 64, this.tr('chapters'), () => {
+      this.chapter = next === null ? CHAPTERS.length - 1 : levelById(next)!.chapter;
+      this.go('levels');
+    }, { kind: next === null ? 'honey' : 'paper', size: 24 });
+    view.button(240, 503, 352, 58, this.tr('back'), () => this.go('menu'), { icon: 'back' });
   }
 
   private header(title: string, back: () => void, settings = false) {
@@ -258,7 +272,7 @@ export class StudioScene extends Phaser.Scene {
 
   private drawLevels() {
     const view = this.view;
-    this.header(this.tr('chapters'), () => this.go('menu'));
+    this.header(this.tr('chapters'), () => this.go('campaign'));
     view.surface('panel', 240, 410, 430, 616);
     for (let index = 0; index < CHAPTERS.length; index++) {
       view.button(101 + index * 139, 148, 132, 54, `${this.tr('chapter')} ${index + 1}`,
@@ -298,9 +312,8 @@ export class StudioScene extends Phaser.Scene {
   }
 
   private openEndless(restart = false) {
-    const session = (restart ? null : this.store.endlessRun) ?? this.store.startEndless();
-    this.session = session;
-    this.go(session.lost ? 'defeat' : 'game');
+    this.session = (restart ? null : this.store.endlessRun) ?? this.store.startEndless();
+    this.go('game');
   }
 
   private points(value: number): string {
@@ -315,7 +328,7 @@ export class StudioScene extends Phaser.Scene {
     const moving = dragged ?? this.selected;
     const endless = this.endless;
     if (endless) {
-      this.header(this.tr('endless'), () => this.go('menu'), true);
+      this.header(this.tr('arcade'), () => this.go('menu'), true);
       this.drawEndlessScores(endless, 115);
       view.label(this.tr('endlessIntro'), 240, 170, 17, { wrap: 405 });
     } else {
@@ -684,7 +697,11 @@ export class StudioScene extends Phaser.Scene {
     view.button(240, 444, 351, 59, this.tr('undoAd'), () => this.offerUndo(),
       { icon: 'undo', live: session.canUndo });
     view.button(240, 509, 351, 59, this.tr('newRun'), () => this.openEndless(true), { kind: 'honey' });
-    view.button(240, 574, 351, 55, this.tr('mainMenu'), () => this.go('menu'), { icon: 'back' });
+    view.button(240, 574, 351, 55, this.tr('mainMenu'), () => {
+      this.store.finishEndless(session);
+      this.session = null;
+      this.go('menu');
+    }, { icon: 'back' });
     if (this.notice) view.label(this.tr(this.notice), 240, 628, 17, { wrap: 364, color: '#853f31' });
   }
 
