@@ -503,8 +503,11 @@ export class StudioScene extends Phaser.Scene {
     this.hint = null;
     this.notice = null;
     this.store.saveRun(this.level, session);
-    this.host.audio('item_place');
-    if (!result.events.length) {
+    const stages = boardAnimationStages(result.events);
+    const firstStage = stages.next();
+    // An immediate reveal is the landing cue. Match-first moves keep their existing cues.
+    if (firstStage.done || firstStage.value.matching) this.host.audio('item_place');
+    if (firstStage.done) {
       this.draw();
       return true;
     }
@@ -518,12 +521,11 @@ export class StudioScene extends Phaser.Scene {
       if (move.to.shelf === index) front[move.to.slot] = landed;
       return { ...shelf, front };
     });
-    this.animateBoard(boardAnimationStages(result.events));
+    this.animateBoard(stages, firstStage);
     return true;
   }
 
-  private animateBoard(stages: ReturnType<typeof boardAnimationStages>) {
-    const stage = stages.next();
+  private animateBoard(stages: ReturnType<typeof boardAnimationStages>, stage = stages.next()) {
     if (stage.done) {
       this.beforeAnimation = null;
       this.motion = null;
