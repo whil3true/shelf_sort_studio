@@ -14,7 +14,7 @@ const en = {
   help1: 'Drag an item onto an empty slot, or tap the item and then the slot.',
   help2: 'Three matching items on one shelf are packed away automatically.',
   help3: 'When the front row is empty, the next row comes forward.',
-  help4: 'Undo and restart are always free.',
+  help4: 'Campaign Undo is free. In Endless Mode, watch an ad to undo a move.',
   restartTitle: 'Restart this level?', restartText: 'Your moves on this level will be reset.',
   replaceTitle: 'Switch levels?', replaceText: 'Your current board will be reset.',
   cancel: 'Cancel', next: 'Next level', levelSelect: 'Level selection', noSpace: 'No empty slots. Undo a move or restart.',
@@ -24,6 +24,12 @@ const en = {
   checking: 'Checking the shelves…', noHint: 'No solution from here. Try Undo.',
   hintLimit: 'A move could not be verified. Try Undo.', noAd: 'Ad unavailable. Try again later.',
   loadingAd: 'Waiting for ad…',
+  endless: 'Endless Mode', newRun: 'New run', score: 'Score', best: 'Best score', matches: 'Triples cleared',
+  endlessIntro: 'Clear triples. New stock arrives behind the front rows.',
+  endlessLost: 'The shelves are full', endlessLostText: 'There are no moves left.',
+  endlessRestart: 'Start a new run?', endlessRestartText: 'This run will end. Your best score will be kept.',
+  undoTitle: 'Undo the last move?', undoText: 'Watch an ad to restore the board and score before your last move.',
+  undoAd: 'Undo with ad', mainMenu: 'Main menu', results: 'Results',
 } as const;
 
 type Key = keyof typeof en;
@@ -42,7 +48,7 @@ const ru: Record<Key, string> = {
   help1: 'Перетащите товар в пустую ячейку или нажмите сначала на товар, затем на ячейку.',
   help2: 'Три одинаковых товара на одной полке убираются автоматически.',
   help3: 'Когда передний ряд пуст, товары из запаса выдвигаются вперёд.',
-  help4: 'Отмена хода и перезапуск всегда бесплатны.',
+  help4: 'В кампании отмена хода бесплатна. В бесконечном режиме за неё нужно посмотреть рекламу.',
   restartTitle: 'Начать уровень заново?', restartText: 'Ходы на этом уровне сбросятся.',
   replaceTitle: 'Сменить уровень?', replaceText: 'Текущая раскладка сбросится.',
   cancel: 'Отмена', next: 'Следующий уровень', levelSelect: 'К выбору уровня', noSpace: 'Нет свободных мест. Отмените ход или начните заново.',
@@ -52,6 +58,12 @@ const ru: Record<Key, string> = {
   checking: 'Проверяем раскладку…', noHint: 'Решения нет. Попробуйте отменить ход.',
   hintLimit: 'Ход подтвердить не удалось. Попробуйте отменить ход.', noAd: 'Реклама недоступна. Попробуйте позже.',
   loadingAd: 'Ждём рекламу…',
+  endless: 'Бесконечный режим', newRun: 'Новая партия', score: 'Очки', best: 'Рекорд', matches: 'Собрано троек',
+  endlessIntro: 'Собирайте тройки. Новые запасы появляются за товарами.',
+  endlessLost: 'Полки заполнены', endlessLostText: 'Свободных ячеек для хода больше нет.',
+  endlessRestart: 'Начать новую партию?', endlessRestartText: 'Текущая партия завершится. Рекорд сохранится.',
+  undoTitle: 'Отменить последний ход?', undoText: 'Посмотрите рекламу, чтобы вернуть раскладку и очки до последнего хода.',
+  undoAd: 'Отмена за рекламу', mainMenu: 'Главное меню', results: 'Результат',
 };
 
 export const CHAPTERS: readonly Key[] = ['chapter1', 'chapter2', 'chapter3'];
