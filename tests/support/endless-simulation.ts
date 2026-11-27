@@ -44,15 +44,45 @@ function verifyDelivery(result: EndlessMove, settled: Board, label: string) {
   const { board, supplied, stockProof } = result;
   assert.equal(supplied.length, 2, label);
   assert.equal(new Set(supplied).size, 2, label);
+  let front = 0;
+  const added = new Map<string, number>();
   for (const [index, shelf] of board.entries()) {
-    if (supplied.includes(index)) {
-      assert.equal(settled[index].stock.length, 0, label);
-      assert.ok(shelf.front.some(Boolean) && shelf.stock.length === 1, label);
+    if (!supplied.includes(index)) {
+      assert.deepEqual(shelf, settled[index], label);
+      continue;
+    }
+    assert.equal(settled[index].stock.length, 0, label);
+    const wasEmpty = settled[index].front.every(good => good === null);
+    const suppliedRow = wasEmpty ? shelf.front : shelf.stock[0];
+    if (wasEmpty) {
+      front++;
+      assert.equal(shelf.stock.length, 0, label);
+    } else {
+      assert.equal(shelf.stock.length, 1, label);
       assert.deepEqual(shelf.front, settled[index].front, label);
-    } else assert.deepEqual(shelf, settled[index], label);
+    }
+    const [a, b, c] = suppliedRow;
+    assert.ok(suppliedRow.some(Boolean) && !(a && a === b && a === c), label);
+    for (const good of suppliedRow) {
+      if (good) added.set(good, (added.get(good) ?? 0) + 1);
+    }
   }
+  assert.ok([...added.values()].every(count => count % 3 === 0), label);
   assert.ok(stockProof, label);
   replayProof(board, stockProof, label);
+  return front === 2 ? 'front' : front === 1 ? 'mixed' : 'rear';
+}
+
+// Compare both versions using the same geometric and tier-capacity criteria.
+function potentialCapacity(board: Board, matches: number) {
+  const tier = endlessTier(matches);
+  const goodsCap = [24, 27, MAX_ENDLESS_GOODS][tier];
+  const rearCap = tier === 2 ? MAX_ENDLESS_STOCK : 4;
+  const rearRows = board.filter(shelf => shelf.stock.length).length;
+  const empty = board.filter(shelf => !shelf.stock.length && !shelf.front.some(Boolean)).length;
+  const rear = board.length - rearRows - empty;
+  return goodsLeft(board) + 3 <= goodsCap
+    && empty + Math.min(rear, Math.max(0, rearCap - rearRows)) >= 2;
 }
 
 export function simulateEndless(firstSeed: number, seedCount: number, moveLimit: number) {
@@ -66,11 +96,14 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
       solver_limit: 0, unsolvable: 0, supplied: 0, redealt: 0, no_moves: 0,
     };
     const checks = { solved: 0, limit: 0, unsolvable: 0 };
-    const deliveries = { deliveries: 0, withoutMatch: 0, ordinaryTurns: 0, small: 0, full: 0, afterRetry: 0 };
+    const deliveries = { deliveries: 0, withoutMatch: 0, ordinaryTurns: 0, small: 0, full: 0, afterRetry: 0, front: 0, mixed: 0, rear: 0 };
     const duration: number[] = [];
     const searchDuration: number[] = [];
     const visited: number[] = [];
     const gaps: number[] = [];
+    const potentialGaps: number[] = [];
+    const potentialMisses = { no_capacity: 0, no_eligible_shelves: 0, stock_cap: 0, solver_limit: 0, unsolvable: 0 };
+    let potentialTurns = 0;
     let maxSolverStreak = 0;
     let maxMatchlessGap = 0;
     let losses = 0;
@@ -90,6 +123,7 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
       let planIndex = 0;
       let random = seed + 6_122;
       let gap = 0;
+      let potentialGap = 0;
       let matchlessGap = 0;
       let solverStreak = 0;
       for (let turn = 1; turn <= moveLimit; turn++) {
@@ -115,6 +149,16 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
         duration.push(moveMs);
         const { status, checks: attempted } = result.stock;
         outcomes[status]++;
+        const dueWithSpace = status !== 'not_due' && status !== 'redealt' && status !== 'no_moves'
+          && potentialCapacity(settled.board, session.matches);
+        if (dueWithSpace) potentialTurns++;
+        if (dueWithSpace && status in potentialMisses) {
+          potentialGap++;
+          potentialMisses[status as keyof typeof potentialMisses]++;
+        } else if (potentialGap) {
+          potentialGaps.push(potentialGap);
+          potentialGap = 0;
+        }
         if (attempted.length) {
           searchDuration.push(moveMs);
           visited.push(attempted.reduce((sum, check) => sum + check.visited, 0));
@@ -126,7 +170,7 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
         if (status === 'solver_limit' || status === 'unsolvable') maxSolverStreak = Math.max(maxSolverStreak, ++solverStreak);
         else solverStreak = 0;
         if (status === 'supplied') {
-          verifyDelivery(result, settled.board, label);
+          deliveries[verifyDelivery(result, settled.board, label)]++;
           deliveries.deliveries++;
           if (!matched) deliveries.withoutMatch++;
           if (attempted.length > 1) deliveries.afterRetry++;
@@ -187,6 +231,7 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
         }
       }
       gaps.push(gap);
+      if (potentialGap) potentialGaps.push(potentialGap);
       triples += session.matches;
     }
     const moves = duration.length;
@@ -197,6 +242,8 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
         per100Due: due ? 100 * deliveries.deliveries / due : null },
       gapsWithoutDelivery: { ...metrics(gaps), atLeast6: gaps.filter(gap => gap >= 6).length,
         atLeast12: gaps.filter(gap => gap >= 12).length, intervals: gaps.length, maxMatchlessGap, maxSolverStreak },
+      dueWithPotentialCapacity: { turns: potentialTurns, misses: potentialMisses,
+        streaks: potentialGaps.length, atLeast6: potentialGaps.filter(gap => gap >= 6).length, ...metrics(potentialGaps) },
       losses, lostAfterReveal, lossTiers, lossByTurn, averageMoves: moves / seedCount,
       averageMovesToLoss: losses ? losingTurns / losses : null, averageTriples: triples / seedCount,
       averageGoods: totalGoods / moves, averageVacant: totalVacant / moves, averageLegalMoves: totalLegalMoves / moves,

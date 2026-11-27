@@ -377,7 +377,7 @@ export class StudioScene extends Phaser.Scene {
           });
         } else if (event?.type === 'match') {
           this.trackMotion(progress => item.setY(at.y - 20 * progress).setAlpha(1 - progress));
-        } else if (this.motion?.redealt) {
+        } else if (this.motion?.redealt || (this.motion?.stock?.has(index) && !shelf.stock.length)) {
           this.trackMotion(progress => item.setAlpha(progress));
         }
       });
@@ -544,11 +544,13 @@ export class StudioScene extends Phaser.Scene {
     if (session instanceof EndlessSession) this.store.saveEndless(session);
     else this.store.saveRun(this.level, session);
     if (!result.events.length) {
-      this.host.audio('item_place');
       if (stock?.supplied.length) {
         this.animation = true;
         this.animateStock(stock);
-      } else this.finishMove();
+      } else {
+        this.host.audio('item_place');
+        this.finishMove();
+      }
       return true;
     }
 
@@ -571,7 +573,7 @@ export class StudioScene extends Phaser.Scene {
     const stage = stages.next();
     if (stage.done) {
       this.beforeAnimation = null;
-      if (stock?.supplied.length || stock?.redealt) this.animateStock(stock);
+      if (stock?.supplied.length || stock?.redealt) this.animateStock(stock, previousEffect);
       else this.finishMove();
       return;
     }
@@ -599,12 +601,13 @@ export class StudioScene extends Phaser.Scene {
           const [front, ...stock] = shelf.stock;
           return { front, stock };
         });
-        this.animateBoard(stages, stock, effect);
+        this.animateBoard(stages, stock, effect ?? previousEffect);
       },
     });
   }
 
-  private animateStock(stock: EndlessMove) {
+  private animateStock(stock: EndlessMove, previousEffect: AudioEffect | null = null) {
+    if (stock.supplied.length) this.host.audio('shelf_reveal', previousEffect ?? undefined);
     const shelves = stock.redealt ? stock.board.map((_, index) => index) : stock.supplied;
     const motion: BoardMotion = {
       events: new Map(), stock: new Set(shelves), redealt: stock.redealt, progress: 0, render: [],
