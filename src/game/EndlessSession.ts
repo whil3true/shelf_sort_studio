@@ -1,5 +1,5 @@
 import { GOODS, goodsLeft, moveGood, type Board, type Move, type MoveResult, type Row } from './Board.ts';
-import { addEndlessStock, dealEndless, endlessStockDue, ENDLESS_SHELVES, MAX_ENDLESS_GOODS, MAX_ENDLESS_STOCK } from './EndlessStock.ts';
+import { addEndlessStock, dealEndless, endlessStockDue, ENDLESS_SHELVES, MAX_ENDLESS_GOODS, MAX_ENDLESS_STOCK, type StockReport } from './EndlessStock.ts';
 
 const HISTORY_LIMIT = 8;
 const POINTS_PER_MATCH = 100;
@@ -23,7 +23,8 @@ interface EndlessSave {
 export interface EndlessMove extends MoveResult {
   readonly supplied: readonly number[];
   readonly redealt: boolean;
-  readonly stockCheck?: 'solved' | 'unsolvable' | 'limit';
+  readonly stock: StockReport | { readonly status: 'not_due' | 'no_moves' | 'redealt'; readonly checks: readonly [] };
+  readonly stockProof?: readonly Move[];
 }
 
 export function hasLegalMove(board: Board): boolean {
@@ -92,25 +93,26 @@ export class EndlessSession {
     const moves = this.position.moves + 1;
     let { lastSupply, lastSupplyMove, randomState } = this.position;
     let supplied: readonly number[] = [];
-    let stockCheck: EndlessMove['stockCheck'];
+    let stock: EndlessMove['stock'] = { status: 'not_due', checks: [] };
+    let stockProof: EndlessMove['stockProof'];
     const redealt = goodsLeft(board) === 0;
     if (redealt) {
       ({ board, randomState } = dealEndless(this.seed, randomState, matches));
       lastSupply = matches;
       lastSupplyMove = moves;
-    } else if (hasLegalMove(board) && endlessStockDue(matches, moves - lastSupplyMove, matches - lastSupply, removed > 0)) {
+      stock = { status: 'redealt', checks: [] };
+    } else if (!hasLegalMove(board)) {
+      stock = { status: 'no_moves', checks: [] };
+    } else if (endlessStockDue(matches, moves - lastSupplyMove, matches - lastSupply)) {
       const supply = addEndlessStock(board, this.seed, randomState, matches, cleared);
-      if (supply) {
-        ({ board, supplied, randomState } = supply);
-        stockCheck = supply.check;
-        if (supplied.length) {
-          lastSupply = matches;
-          lastSupplyMove = moves;
-        }
+      ({ board, supplied, randomState, report: stock, proof: stockProof } = supply);
+      if (supplied.length) {
+        lastSupply = matches;
+        lastSupplyMove = moves;
       }
     }
     this.position = { board, matches, randomState, lastSupply, moves, lastSupplyMove };
-    return { board, events: result.events, supplied, redealt, stockCheck };
+    return { board, events: result.events, supplied, redealt, stock, stockProof };
   }
 
   undo(): boolean {

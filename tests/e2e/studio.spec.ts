@@ -468,7 +468,8 @@ test('a plain move animates a partial rear row in its own slots at 480×800', as
   const move = moveSupplyPath.at(-1)!;
   const supply = model.move(move)!;
   expect(supply.events).toEqual([]);
-  const shelf = supply.supplied.find(index => index !== move.from.shelf && index !== move.to.shelf)!;
+  expect(supply.stock.checks.map(check => check.status)).toEqual(['limit', 'solved']);
+  const shelf = supply.supplied.find(index => model.board[index].stock[0].filter(Boolean).length === 1)!;
   const rear = model.board[shelf].stock[0];
   expect(rear.filter(Boolean)).toHaveLength(1);
   const sample = async (slot: number) => {
@@ -496,10 +497,11 @@ test('a plain move animates a partial rear row in its own slots at 480×800', as
   }
 
   const front = model.board[shelf].front;
-  const empty = model.board.findIndex(({ front, stock }) => front.every(good => good === null) && !stock.length);
+  const empty = model.board.flatMap(({ front, stock }, index) => stock.length ? [] :
+    front.flatMap((good, slot) => good === null ? [{ shelf: index, slot }] : []));
   for (const [slot, good] of front.entries()) {
     if (!good) continue;
-    const expose = { from: { shelf, slot }, to: { shelf: empty, slot } };
+    const expose = { from: { shelf, slot }, to: empty.shift()! };
     expect(model.move(expose)).toBeTruthy();
     await endlessTurn(page, expose);
     await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());

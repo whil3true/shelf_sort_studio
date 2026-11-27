@@ -4,13 +4,19 @@ import { EndlessSession, hasLegalMove, type EndlessMove } from '../../src/game/E
 import { endlessTier, MAX_ENDLESS_GOODS, MAX_ENDLESS_STOCK } from '../../src/game/EndlessStock.ts';
 import { solve } from '../../src/game/Solver.ts';
 
-function certifiedPath(board: Board, label: string): Move[] {
+function certifiedPath(board: Board, label: string): readonly Move[] {
   const result = solve(board, 3_500, 3);
   assert.equal(result.status, 'solved', label);
-  let replay = board;
-  for (const move of result.moves) replay = moveGood(replay, move)!.board;
-  assert.equal(goodsLeft(replay), 0, label);
-  return [...result.moves];
+  return result.moves;
+}
+
+function replayProof(board: Board, moves: readonly Move[], label: string) {
+  for (const move of moves) {
+    const next = moveGood(board, move);
+    assert.ok(next, label);
+    board = next.board;
+  }
+  assert.equal(goodsLeft(board), 0, label);
 }
 
 function crossShelfMoves(board: Board): Move[] {
@@ -19,129 +25,158 @@ function crossShelfMoves(board: Board): Move[] {
     good ? empty.filter(to => to.shelf !== index).map(to => ({ from: { shelf: index, slot }, to })) : []));
 }
 
-function deliveryStats() {
-  return { queries: 0, deliveries: 0, withoutMatch: 0, small: 0, full: 0, limits: 0, unsolvable: 0, legacyRejected: 0 };
-}
-
-function recordDelivery(
-  stats: ReturnType<typeof deliveryStats>, result: EndlessMove, settled: Board, rngAdvanced: boolean,
-) {
-  if (result.supplied.length) {
-    stats.deliveries++;
-    const added = goodsLeft(result.board) - goodsLeft(settled);
-    assert.ok(added === 3 || added === 6);
-    if (added === 3) stats.small++;
-    else stats.full++;
-    if (!result.events.some(event => event.type === 'match')) stats.withoutMatch++;
-  }
-  if (result.stockCheck || (rngAdvanced && !result.redealt)) stats.queries++;
-  if (result.stockCheck === 'limit') stats.limits++;
-  if (result.stockCheck === 'unsolvable') stats.unsolvable++;
-  if (!result.stockCheck && rngAdvanced && !result.redealt && !result.supplied.length) stats.legacyRejected++;
-}
-
 function population(board: Board) {
-  const fronts = board.map(shelf => shelf.front.filter(Boolean).length);
-  const filled = fronts.reduce((sum, count) => sum + count, 0);
+  const filled = board.reduce((sum, shelf) => sum + shelf.front.filter(Boolean).length, 0);
   const vacant = board.length * 3 - filled;
   return { vacant, legalMoves: filled * vacant, goods: goodsLeft(board) };
 }
 
+function metrics(samples: number[]) {
+  samples.sort((a, b) => a - b);
+  return {
+    p95: samples.length ? samples[Math.floor(samples.length * 0.95)] : null,
+    p99: samples.length ? samples[Math.floor(samples.length * 0.99)] : null,
+    max: samples.at(-1) ?? null,
+  };
+}
+
+function verifyDelivery(result: EndlessMove, settled: Board, label: string) {
+  const { board, supplied, stockProof } = result;
+  assert.equal(supplied.length, 2, label);
+  assert.equal(new Set(supplied).size, 2, label);
+  for (const [index, shelf] of board.entries()) {
+    if (supplied.includes(index)) {
+      assert.equal(settled[index].stock.length, 0, label);
+      assert.ok(shelf.front.some(Boolean) && shelf.stock.length === 1, label);
+      assert.deepEqual(shelf.front, settled[index].front, label);
+    } else assert.deepEqual(shelf, settled[index], label);
+  }
+  assert.ok(stockProof, label);
+  replayProof(board, stockProof, label);
+}
+
 export function simulateEndless(firstSeed: number, seedCount: number, moveLimit: number) {
   const starts = new Set<string>();
-  const duration: number[] = [];
   const phases = Array.from({ length: 3 }, () => ({ turns: 0, types: 0, vacant: 0, stock: 0, goods: 0, legalMoves: 0 }));
-  const deliveries = deliveryStats();
-  const searchDuration: number[] = [];
-  let redeals = 0;
-  let triples = 0;
   const started = performance.now();
 
-  for (let seed = firstSeed; seed < firstSeed + seedCount; seed++) {
-    const session = EndlessSession.start(seed);
-    starts.add(JSON.stringify(session.board));
-    let plan = certifiedPath(session.board, `initial seed ${seed}`);
-    for (let turn = 0; turn < moveLimit; turn++) {
-      const move = plan.shift();
-      const label = `seed ${seed}, turn ${turn + 1}`;
-      assert.ok(move, label);
-      const settled = moveGood(session.board, move);
-      assert.ok(settled, label);
-      const randomState = session.snapshot().position.randomState;
-      const time = performance.now();
-      const result = session.move(move);
-      const moveMs = performance.now() - time;
-      duration.push(moveMs);
-      assert.ok(result && !session.lost, label);
-
-      const rngAdvanced = session.snapshot().position.randomState !== randomState;
-      recordDelivery(deliveries, result, settled.board, rngAdvanced);
-      if (result.stockCheck || (rngAdvanced && !result.redealt)) searchDuration.push(moveMs);
-      const supply = result.supplied;
-      if (supply.length) {
-        assert.equal(supply.length, 2, label);
-        for (const [index, shelf] of result.board.entries()) {
-          if (supply.includes(index)) {
-            assert.equal(settled.board[index].stock.length, 0, label);
-            assert.ok(shelf.front.some(Boolean) && shelf.stock.length === 1, label);
-            assert.deepEqual(shelf.front, settled.board[index].front, label);
-          } else assert.deepEqual(shelf, settled.board[index], label);
-        }
-      }
-      if (result.redealt) {
-        redeals++;
-        assert.equal(goodsLeft(settled.board), 0, label);
-      }
-      if (supply.length || result.redealt) plan = certifiedPath(session.board, label);
-
-      const phase = phases[endlessTier(session.matches)];
-      const distinct = new Set(session.board.flatMap(shelf => [...shelf.front, ...shelf.stock.flat()]).filter(Boolean));
-      const stock = session.board.reduce((sum, shelf) => sum + shelf.stock.length, 0);
-      assert.ok(stock <= MAX_ENDLESS_STOCK && goodsLeft(session.board) <= MAX_ENDLESS_GOODS, label);
-      phase.turns++;
-      phase.types += distinct.size;
-      const { vacant, legalMoves, goods } = population(session.board);
-      phase.vacant += vacant;
-      phase.legalMoves += legalMoves;
-      phase.goods += goods;
-      phase.stock += stock;
-    }
-    triples += session.matches;
-  }
-
-  function imperfect(preferImmediateMatches: boolean) {
+  function run(policy: 'planned' | 'random' | 'immediateMatch') {
+    const outcomes: Record<EndlessMove['stock']['status'], number> = {
+      not_due: 0, no_capacity: 0, no_eligible_shelves: 0, stock_cap: 0,
+      solver_limit: 0, unsolvable: 0, supplied: 0, redealt: 0, no_moves: 0,
+    };
+    const checks = { solved: 0, limit: 0, unsolvable: 0 };
+    const deliveries = { deliveries: 0, withoutMatch: 0, ordinaryTurns: 0, small: 0, full: 0, afterRetry: 0 };
+    const duration: number[] = [];
+    const searchDuration: number[] = [];
+    const visited: number[] = [];
+    const gaps: number[] = [];
+    let maxSolverStreak = 0;
+    let maxMatchlessGap = 0;
     let losses = 0;
     let lostAfterReveal = 0;
-    let turns = 0;
     let losingTurns = 0;
-    let matches = 0;
-    const lossTiers = [0, 0, 0];
-    const lossByTurn = { first30: 0, first60: 0 };
-    const deliveries = deliveryStats();
+    let triples = 0;
     let totalGoods = 0;
     let totalLegalMoves = 0;
+    let totalVacant = 0;
+    const lossTiers = [0, 0, 0];
+    const lossByTurn = { first30: 0, first60: 0 };
+
     for (let seed = firstSeed; seed < firstSeed + seedCount; seed++) {
       const session = EndlessSession.start(seed);
+      if (policy === 'planned') starts.add(JSON.stringify(session.board));
+      let plan: readonly Move[] = policy === 'planned' ? certifiedPath(session.board, `initial seed ${seed}`) : [];
+      let planIndex = 0;
       let random = seed + 6_122;
+      let gap = 0;
+      let matchlessGap = 0;
+      let solverStreak = 0;
       for (let turn = 1; turn <= moveLimit; turn++) {
-        const choices = crossShelfMoves(session.board);
-        const scoring = preferImmediateMatches ? choices.filter(move =>
-          moveGood(session.board, move)!.events.some(event => event.type === 'match')) : [];
-        const options = scoring.length ? scoring : choices;
-        assert.ok(options.length);
-        random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
-        const move = options[Math.floor(random * options.length / 2 ** 32)];
-        const settled = moveGood(session.board, move)!;
-        const randomState = session.snapshot().position.randomState;
+        const label = `${policy}, seed ${seed}, turn ${turn}`;
+        let move: Move;
+        if (policy === 'planned') {
+          move = plan[planIndex++];
+        } else {
+          const choices = crossShelfMoves(session.board);
+          const scoring = policy === 'immediateMatch' ? choices.filter(move =>
+            moveGood(session.board, move)!.events.some(event => event.type === 'match')) : [];
+          const options = scoring.length ? scoring : choices;
+          random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
+          move = options[Math.floor(random * options.length / 2 ** 32)];
+        }
+        assert.ok(move, label);
+        const settled = moveGood(session.board, move);
+        assert.ok(settled, label);
+        const time = performance.now();
         const result = session.move(move);
-        assert.ok(result);
-        turns++;
-        recordDelivery(deliveries, result, settled.board, session.snapshot().position.randomState !== randomState);
-        const { goods, legalMoves } = population(session.board);
+        const moveMs = performance.now() - time;
+        assert.ok(result, label);
+        duration.push(moveMs);
+        const { status, checks: attempted } = result.stock;
+        outcomes[status]++;
+        if (attempted.length) {
+          searchDuration.push(moveMs);
+          visited.push(attempted.reduce((sum, check) => sum + check.visited, 0));
+          for (const check of attempted) checks[check.status]++;
+        }
+
+        const matched = result.events.some(event => event.type === 'match');
+        if (!matched) deliveries.ordinaryTurns++;
+        if (status === 'solver_limit' || status === 'unsolvable') maxSolverStreak = Math.max(maxSolverStreak, ++solverStreak);
+        else solverStreak = 0;
+        if (status === 'supplied') {
+          verifyDelivery(result, settled.board, label);
+          deliveries.deliveries++;
+          if (!matched) deliveries.withoutMatch++;
+          if (attempted.length > 1) deliveries.afterRetry++;
+          const added = goodsLeft(result.board) - goodsLeft(settled.board);
+          assert.ok(added === 3 || added === 6, label);
+          if (added === 3) deliveries.small++;
+          else deliveries.full++;
+          gaps.push(gap);
+          gap = 0;
+        } else {
+          assert.equal(result.supplied.length, 0, label);
+          gap++;
+        }
+        matchlessGap = matched || status === 'supplied' ? 0 : matchlessGap + 1;
+        maxMatchlessGap = Math.max(maxMatchlessGap, matchlessGap);
+
+        if (result.redealt) assert.equal(goodsLeft(settled.board), 0, label);
+        if (policy === 'planned') {
+          assert.ok(!session.lost, label);
+          if (result.supplied.length || result.redealt) {
+            // Keep the same playing policy as PR #15. Use the actual proof when this
+            // independent search has a different ordering and exhausts its budget.
+            const path = solve(session.board, 3_500, 3);
+            if (path.status === 'solved') plan = path.moves;
+            else {
+              assert.ok(result.stockProof, label);
+              plan = result.stockProof;
+            }
+            planIndex = 0;
+          }
+        }
+
+        const { vacant, legalMoves, goods } = population(session.board);
+        const stock = session.board.reduce((sum, shelf) => sum + shelf.stock.length, 0);
+        assert.ok(stock <= MAX_ENDLESS_STOCK && goods <= MAX_ENDLESS_GOODS, label);
         totalGoods += goods;
         totalLegalMoves += legalMoves;
+        totalVacant += vacant;
+        if (policy === 'planned') {
+          const phase = phases[endlessTier(session.matches)];
+          const distinct = new Set(session.board.flatMap(shelf => [...shelf.front, ...shelf.stock.flat()]).filter(Boolean));
+          phase.turns++;
+          phase.types += distinct.size;
+          phase.vacant += vacant;
+          phase.legalMoves += legalMoves;
+          phase.goods += goods;
+          phase.stock += stock;
+        }
         if (session.lost) {
-          assert.ok(goodsLeft(session.board) > 0 && !hasLegalMove(session.board));
+          assert.ok(goods > 0 && !hasLegalMove(session.board), label);
           losses++;
           losingTurns += turn;
           if (turn <= 30) lossByTurn.first30++;
@@ -151,32 +186,34 @@ export function simulateEndless(firstSeed: number, seedCount: number, moveLimit:
           break;
         }
       }
-      matches += session.matches;
+      gaps.push(gap);
+      triples += session.matches;
     }
-    return { losses, lossTiers, lossByTurn, lostAfterReveal, averageMoves: turns / seedCount,
-      averageMovesToLoss: losses ? losingTurns / losses : null, averageTriples: matches / seedCount,
-      averageGoods: totalGoods / turns, averageLegalMoves: totalLegalMoves / turns, deliveries };
+    const moves = duration.length;
+    const due = moves - outcomes.not_due - outcomes.redealt - outcomes.no_moves;
+    return {
+      moves, due, redeals: outcomes.redealt, outcomes, checks,
+      deliveries: { ...deliveries, per100Moves: 100 * deliveries.deliveries / moves,
+        per100Due: due ? 100 * deliveries.deliveries / due : null },
+      gapsWithoutDelivery: { ...metrics(gaps), atLeast6: gaps.filter(gap => gap >= 6).length,
+        atLeast12: gaps.filter(gap => gap >= 12).length, intervals: gaps.length, maxMatchlessGap, maxSolverStreak },
+      losses, lostAfterReveal, lossTiers, lossByTurn, averageMoves: moves / seedCount,
+      averageMovesToLoss: losses ? losingTurns / losses : null, averageTriples: triples / seedCount,
+      averageGoods: totalGoods / moves, averageVacant: totalVacant / moves, averageLegalMoves: totalLegalMoves / moves,
+      runtimeMoveMs: metrics(duration), runtimeSearchTurnMs: metrics(searchDuration), expandedPerSearchTurn: metrics(visited),
+    };
   }
 
-  const random = imperfect(false);
-  const immediateMatch = imperfect(true);
-  function runtime(samples: number[]) {
-    samples.sort((a, b) => a - b);
-    return { p95: samples[Math.floor(samples.length * 0.95)], p99: samples[Math.floor(samples.length * 0.99)],
-      max: samples.at(-1) };
-  }
+  const planned = run('planned');
+  const random = run('random');
+  const immediateMatch = run('immediateMatch');
   return {
-    seedCount, distinctStarts: starts.size, moveLimit,
-    planned: { moves: duration.length, redeals, averageTriples: triples / seedCount, deliveries },
+    firstSeed, seedCount, distinctStarts: starts.size, moveLimit, planned, random, immediateMatch,
     phases: phases.map(({ turns, types, vacant, stock, goods, legalMoves }) => ({
       turns, averageTypes: turns ? types / turns : null, averageVacant: turns ? vacant / turns : null,
-      averageGoods: turns ? goods / turns : null,
-      averageLegalMoves: turns ? legalMoves / turns : null,
+      averageGoods: turns ? goods / turns : null, averageLegalMoves: turns ? legalMoves / turns : null,
       averageStockRows: turns ? stock / turns : null,
     })),
-    random, immediateMatch,
-    runtimeMoveMs: runtime(duration),
-    runtimeSearchTurnMs: runtime(searchDuration),
     elapsedSeconds: (performance.now() - started) / 1_000,
   };
 }
