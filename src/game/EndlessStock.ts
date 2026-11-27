@@ -93,6 +93,13 @@ export interface StockReport {
   readonly checks: readonly StockCheck[];
 }
 
+interface StockTarget {
+  readonly shelf: number;
+  readonly occupied: number;
+}
+
+type StockPair = readonly [StockTarget, StockTarget];
+
 export function addEndlessStock(
   board: Board, seed: number, randomState: number, matches: number, cleared: ReadonlySet<number>,
 ): { board: Board; supplied: readonly number[]; randomState: number; proof?: readonly Move[]; report: StockReport } {
@@ -101,42 +108,60 @@ export function addEndlessStock(
   const checks: StockCheck[] = [];
   const skip = (status: StockStatus) => ({ board, supplied: [], randomState, report: { status, checks } });
   if (remaining + 3 > config.capacity) return skip('no_capacity');
-  if (board.filter(shelf => shelf.stock.length).length + 2 > config.stock) return skip('stock_cap');
+
+  const targets = board.flatMap((shelf, index) =>
+    shelf.stock.length ? [] : [{ shelf: index, occupied: shelf.front.filter(Boolean).length }]);
+  // A single triple needs two shelves: neither a front nor a hidden row may contain all three.
+  if (targets.length < 2) return skip('no_eligible_shelves');
+  const rearSpace = Math.max(0, config.stock - (board.length - targets.length));
+  const canPair = ([first, second]: StockPair) =>
+    Number(first.occupied > 0) + Number(second.occupied > 0) <= rearSpace;
+  const emptyShelves = targets.filter(target => target.occupied === 0);
+  if (emptyShelves.length + rearSpace < 2) return skip('stock_cap');
 
   const random = new Random(randomState);
-  const available = random.shuffle(board.flatMap((shelf, index) =>
-    !shelf.stock.length && shelf.front.some(Boolean) ? [index] : []));
-  if (available.length < 2) return skip('no_eligible_shelves');
-
+  const rear = random.shuffle(targets.filter(target => target.occupied));
   const pool = random.shuffle(palette(seed).slice(0, config.palette));
   const [a, b] = pool;
-  const full = remaining + 6 <= config.capacity && random.index(100) < config.fullChance;
-  // A full reserve can raise front occupancy when exposed. Prefer accessible shelves as difficulty increases.
-  const frontCount = (index: number) => board[index].front.filter(Boolean).length;
-  available.sort((a, b) => Number(cleared.has(a)) - Number(cleared.has(b))
-    || (full && matches >= 6 ? frontCount(a) - frontCount(b) : 0));
-  const firstShelves = available.slice(0, 2);
-  const firstRows = full
-    ? [row(random, [a, a, b]), row(random, [a, b, b])]
-    : random.shuffle([row(random, [a, null, a]), row(random, [null, a, null])]);
+  // Reserve the six-item delivery for two rear rows so it cannot take six front slots at once.
+  const twoRear = rear.length >= 2 && rearSpace >= 2;
+  const full = twoRear && remaining + 6 <= config.capacity
+    && random.index(100) < config.fullChance;
+  const recentlyCleared = (first: StockTarget, second: StockTarget) =>
+    Number(cleared.has(first.shelf)) - Number(cleared.has(second.shelf));
+  rear.sort((a, b) => recentlyCleared(a, b) || (full && matches >= 6 ? a.occupied - b.occupied : 0));
 
-  // Retry with a single triple and favor fronts that can be uncovered with fewer transfers.
-  // Putting two goods behind the lighter front makes a visible pair easier to obtain.
-  const accessible = [...available].sort((a, b) =>
-    Number(cleared.has(a)) - Number(cleared.has(b)) || frontCount(a) - frontCount(b));
-  const pairs = accessible.flatMap((first, index) => accessible.slice(index + 1).map(second => [first, second]));
-  const alternatives = pairs.filter(pair => !firstShelves.every(shelf => pair.includes(shelf)));
+  const front = random.shuffle(emptyShelves).sort(recentlyCleared);
+  const accessible = [...rear].sort((a, b) => recentlyCleared(a, b) || a.occupied - b.occupied);
+  const frontPairs: StockPair[] = front.flatMap((first, index) => [
+    ...front.slice(index + 1).map((second): StockPair => [first, second]),
+    ...accessible.map((second): StockPair => [first, second]),
+  ]);
+  const rearPairs = accessible.flatMap((first, index) =>
+    accessible.slice(index + 1).map((second): StockPair => [first, second]));
+  const firstPair: StockPair = twoRear ? [rear[0], rear[1]] : frontPairs.find(canPair)!;
+  const firstRows = full ? [row(random, [a, a, b]), row(random, [a, b, b])]
+    : twoRear
+      ? random.shuffle([row(random, [a, null, a]), row(random, [null, a, null])])
+      : [row(random, [a, a, null]), row(random, [a, null, null])];
+
+  // After the preferred delivery, try a visible pair or a lighter front with compact stock.
+  const alternatives = [...frontPairs, ...rearPairs].filter(pair =>
+    canPair(pair) && !pair.every(target => firstPair.includes(target)));
   const budgets = [36, 42, 42, 48];
   for (const [attempt, budget] of budgets.entries()) {
-    const shelves = attempt === 0 ? firstShelves : alternatives[attempt - 1] ?? pairs[0];
+    const pair = attempt === 0 ? firstPair : alternatives[attempt - 1] ?? firstPair;
     const good = pool[attempt];
     const rows = attempt === 0 ? firstRows : [row(random, [good, null, good]), row(random, [good, null, null])];
-    const candidate = board.map((shelf, index) => {
-      const at = shelves.indexOf(index);
-      return at < 0 ? shelf : { ...shelf, stock: [rows[at]] };
-    });
+    const shelves = pair.map(target => target.shelf);
+    const candidate = [...board];
+    for (const [index, target] of pair.entries()) {
+      const shelf = board[target.shelf];
+      candidate[target.shelf] = target.occupied ? { ...shelf, stock: [rows[index]] } : { front: rows[index], stock: [] };
+    }
 
-    const check = attempt === 0 ? solve(candidate, budget, 3) : solveStock(candidate, budget);
+    const check = attempt === 0 && twoRear
+      ? solve(candidate, budget, 3) : solveStock(candidate, budget);
     checks.push({ size: attempt === 0 && full ? 6 : 3, shelves, status: check.status, visited: check.visited });
     if (check.status === 'solved') {
       return { board: candidate, supplied: shelves, randomState: random.state, proof: check.moves,

@@ -4,7 +4,9 @@ import { expect, test, type Page } from '@playwright/test';
 import type Phaser from 'phaser';
 import type { AudioEffect } from '../../src/audio/AudioAssetManifest.ts';
 import { EndlessSession } from '../../src/game/EndlessSession.ts';
-import { lossPath, lossSeed, moveSupplyPath, moveSupplySeed, supplyPath, supplySeed } from '../support/endless-fixtures.ts';
+import {
+  clearForRestock, lossPath, lossSeed, moveSupplyPath, moveSupplySeed, restockSave, supplyPath, supplySeed,
+} from '../support/endless-fixtures.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
@@ -441,6 +443,14 @@ async function seededEndless(page: Page, seed: number) {
       return original(buffer);
     } });
   }, seed);
+}
+
+async function savedForRestock(page: Page) {
+  const position = restockSave();
+  await page.addInitScript(({ key, endless }) => {
+    if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify({ version: 2, endless }));
+  }, { key: saveKey, endless: position });
+  return position;
 }
 
 async function endlessTurn(page: Page, move: Move, input: 'click' | 'tap' | 'drag' = 'click') {
@@ -1029,6 +1039,34 @@ test.describe('original audio playback', () => {
   });
 
   test.describe('stock cues', () => {
+    test('a mixed delivery after a match plays one cue without overlap', async ({ page }) => {
+      await savedForRestock(page);
+      await observeNativeAudio(page);
+      await openWithStudioAudioProbe(page);
+      await expect(canvas(page, 'Play')).toBeVisible();
+      await waitForEffects(page);
+      await click(page, 240, 481);
+      await expect(canvas(page, 'Endless Mode')).toBeVisible();
+      await expect.poll(async () => (await musicState(page)).effectsRunning).toBe(true);
+
+      const eventStart = (await audioEvents(page)).length;
+      const effectStart = (await effectsPlayed(page)).length;
+      const from = slotPoint(clearForRestock.from, 6);
+      const to = slotPoint(clearForRestock.to, 6);
+      await click(page, from.x, from.y);
+      await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart)).toEqual([audioAssets.files.item_pickup]);
+      await click(page, to.x, to.y);
+      await expect(canvas(page, 'Endless Mode')).toHaveAttribute('aria-busy', 'false');
+      const expected: AudioEffect[] = ['item_pickup', 'match_three', 'shelf_reveal'];
+      await expect.poll(async () => (await effectsPlayed(page)).slice(effectStart))
+        .toEqual(expected.map(effect => audioAssets.files[effect]));
+      expect((await audioEvents(page)).slice(eventStart)).toEqual(expected);
+      expect(await page.evaluate(() => ({
+        pickup: window.studioAudio.sharedClipOverlaps,
+        match: window.studioAudio.matchRevealOverlaps,
+      }))).toEqual({ pickup: 0, match: 0 });
+    });
+
     const scenarios: {
       title: string; id: number; matches: boolean; setup: Move[]; moveIndex?: number; playSetup?: boolean;
     }[] = [
@@ -1161,6 +1199,59 @@ test('settings dim both gutters and safe areas through a live landscape resize',
 
 test.describe('touch emulation', () => {
   test.use({ hasTouch: true, deviceScaleFactor: 2 });
+  test('a cleared shelf receives visible goods, which can move and survive reload and rewarded Undo', async ({ page, browserName }) => {
+    await page.setViewportSize({ width: 480, height: 800 });
+    await mocked(page);
+    const before = await savedForRestock(page);
+    await page.goto('./');
+
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await click(page, 240, 481);
+    const screen = canvas(page, 'Endless Mode');
+    await expect(screen).toBeVisible();
+    const model = EndlessSession.restore(before)!;
+    const delivery = model.move(clearForRestock)!;
+    const front = delivery.board[0].front;
+    expect(delivery.supplied).toContain(0);
+    expect(front.filter(Boolean)).toHaveLength(2);
+    const sample = async (shelf: number) => {
+      const center = slotPoint({ shelf, slot: 1 }, 6);
+      const corner = await point(page, center.x - 93, center.y - 34);
+      return page.screenshot({ clip: { ...corner, width: 186, height: 59 }, scale: 'css' });
+    };
+    const clearedShelfBefore = await sample(0);
+    const otherShelfBefore = await sample(2);
+
+    await endlessTurn(page, clearForRestock, 'drag');
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+    await expect(screen).toHaveAttribute('aria-busy', 'false');
+    expect((await sample(0)).equals(clearedShelfBefore)).toBe(false);
+    expect((await sample(2)).equals(otherShelfBefore)).toBe(true);
+    const supplied = model.snapshot();
+
+    await page.reload();
+    await expect(canvas(page, 'Play')).toBeVisible();
+    await click(page, 240, 481);
+    await expect(screen).toBeVisible();
+    expect((await readSave(page))?.endless).toEqual(supplied);
+    await click(page, 91, 739);
+    await expect(canvas(page, 'Undo the last move?')).toBeVisible();
+    await click(page, 333, 474);
+    await expect.poll(() => mockValue(page, mock => mock.rewarded.length)).toBe(1);
+    await mockValue(page, mock => {
+      mock.rewarded[0].onRewarded();
+      mock.rewarded[0].onClose(true);
+    });
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(before);
+    const tapOrClick = browserName === 'firefox' ? 'click' : 'tap';
+    await endlessTurn(page, clearForRestock, tapOrClick);
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(supplied);
+    const useDeliveredGood = { from: { shelf: 0, slot: front.findIndex(Boolean) }, to: { shelf: 2, slot: 2 } };
+    expect(model.move(useDeliveredGood)).toBeTruthy();
+    await endlessTurn(page, useDeliveredGood, tapOrClick);
+    await expect.poll(async () => (await readSave(page))?.endless).toEqual(model.snapshot());
+  });
+
   test('Endless Mode supports touch and leaves the run intact when standalone has no ads', async ({ page, browserName }) => {
     if (browserName === 'firefox') test.skip(true, 'Playwright touchscreen.tap is unavailable in Firefox.');
     await page.setViewportSize({ width: 480, height: 800 });
