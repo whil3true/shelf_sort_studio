@@ -22,7 +22,7 @@ async function start() {
   scene = new StudioScene(storage, locale, {
     ready: () => lifecycle.ready(),
     playing: active => lifecycle.playing(active),
-    audio: event => audio.play(event),
+    audio: (event, replaces) => audio.play(event, replaces),
     volumesChanged: () => audio.setVolumes(storage.volumes),
     rewardedAvailable: lifecycle.rewardedAvailable,
     interstitial: () => lifecycle.interstitial(),

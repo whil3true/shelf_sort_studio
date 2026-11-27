@@ -157,19 +157,20 @@ function mockGlobal(t: TestContext, name: string, value: unknown) {
 }
 
 test('audio gates grouped pauses and the disabled manifest does not touch browser audio', t => {
-  const calls: (string | boolean | Readonly<Volumes>)[] = [];
+  const calls: (string | boolean | Readonly<Volumes> | string[])[] = [];
   const output: AudioOutput = {
-    unlock: () => calls.push('unlock'), play: effect => calls.push(effect),
+    unlock: () => calls.push('unlock'),
+    play: (effect, replaces) => calls.push(replaces ? [effect, replaces] : effect),
     setVolumes: volumes => calls.push(volumes), setPaused: paused => calls.push(paused),
   };
   const rt = new AudioRuntime(output, { music: 1, effects: 0.5 });
   rt.unlock();
-  rt.play('shelf_reveal');
+  rt.play('shelf_reveal', 'match_three');
   rt.pauseFor('browser', true);
   rt.pauseFor('ads', true);
   rt.pauseFor('browser', false);
   rt.pauseFor('ads', false);
-  assert.deepEqual(calls, [{ music: 1, effects: 0.5 }, 'unlock', 'shelf_reveal', true, false]);
+  assert.deepEqual(calls, [{ music: 1, effects: 0.5 }, 'unlock', ['shelf_reveal', 'match_three'], true, false]);
 
   for (const event of Object.keys(AUDIO_ASSETS) as AudioEvent[]) {
     assert.equal(audioPath(event), assets.enabled ? `./assets/audio/${AUDIO_ASSETS[event]}` : null);
@@ -446,15 +447,16 @@ test('a failed decode prepares a reusable media fallback that only plays a ready
   mockGlobal(t, 'Audio', Player);
   mockGlobal(t, 'HTMLMediaElement', Player);
   t.mock.method(globalThis, 'fetch', async () => new Response(new Uint8Array([1])));
-  const audio = new BrowserAudioOutput(event => event !== 'background_music' ? 'shared' : null);
+  const audio = new BrowserAudioOutput(event =>
+    event === 'match_three' ? 'match' : event !== 'background_music' ? 'shared' : null);
   audio.setVolumes({ music: 0, effects: 0.4 });
   audio.unlock();
   audio.play('item_pickup');
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(decode.mock.callCount(), 1);
-  assert.equal(players.length, 1);
-  const [player] = players;
-  assert.equal(player.path, 'shared');
+  assert.equal(decode.mock.callCount(), 2);
+  assert.equal(players.length, 2);
+  const player = players.find(({ path }) => path === 'shared')!;
+  const match = players.find(({ path }) => path === 'match')!;
   assert.equal(player.load.mock.callCount(), 1);
   audio.play('item_pickup');
   player.readyState = Player.HAVE_ENOUGH_DATA;
@@ -465,8 +467,14 @@ test('a failed decode prepares a reusable media fallback that only plays a ready
   assert.equal(player.play.mock.callCount(), 2);
   assert.equal(player.currentTime, 0);
   assert.equal(player.volume, 0.4);
+  match.readyState = Player.HAVE_ENOUGH_DATA;
+  audio.play('match_three');
+  assert.equal(match.paused, false);
+  audio.play('shelf_reveal', 'match_three');
+  assert.equal(match.paused, true);
+  assert.equal(player.play.mock.callCount(), 3);
   audio.setPaused(true);
   assert.equal(player.paused, true);
   audio.play('item_pickup');
-  assert.equal(player.play.mock.callCount(), 2);
+  assert.equal(player.play.mock.callCount(), 3);
 });
