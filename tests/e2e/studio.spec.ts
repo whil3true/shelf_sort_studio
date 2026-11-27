@@ -1,10 +1,13 @@
 import { existsSync } from 'node:fs';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { expect, test, type Page } from '@playwright/test';
+import type Phaser from 'phaser';
+import type { AudioEffect } from '../../src/audio/AudioAssetManifest.ts';
 import { LEVELS } from '../../src/game/Levels.ts';
 import type { Move, Slot } from '../../src/game/Board.ts';
 import type { AdCallbacks } from '../../src/platform/Platform.ts';
 import { ART_REFRESH } from '../../src/ui/ArtAssets.ts';
+import type { StudioHost } from '../../src/ui/StudioScene.ts';
 import audioAssets from '../../src/audio/AudioAssets.json' with { type: 'json' };
 
 const saveKey = 'shelf-sort-studio';
@@ -426,8 +429,10 @@ test('SDK pauses and background state overlap, rewarded is voluntary, no-fill an
 
 type AudioProbe = {
   decoded: string[];
+  events: AudioEffect[];
   effects: string[];
   sharedClipOverlaps: number;
+  matchRevealOverlaps: number;
   music?: HTMLMediaElement;
   starts: number;
   contexts: Set<BaseAudioContext>;
@@ -438,9 +443,10 @@ declare global {
 }
 
 async function observeNativeAudio(page: Page) {
-  await page.addInitScript(({ musicFile, sharedFile }) => {
+  await page.addInitScript(({ musicFile, sharedFile, matchFile }) => {
     const probe: AudioProbe = {
-      decoded: [], effects: [], sharedClipOverlaps: 0, starts: 0, contexts: new Set(), screens: [],
+      decoded: [], events: [], effects: [], sharedClipOverlaps: 0, matchRevealOverlaps: 0, starts: 0,
+      contexts: new Set(), screens: [],
     };
     window.studioAudio = probe;
     const fileNames = new WeakMap<ArrayBuffer, string>();
@@ -463,22 +469,28 @@ async function observeNativeAudio(page: Page) {
         return buffer;
       });
     };
-    let sharedClip: { voice: AudioBufferSourceNode; endsAt: number } | undefined;
+    type Clip = { voice: AudioBufferSourceNode; endsAt: number };
+    let sharedClip: Clip | undefined;
+    let matchClip: Clip | undefined;
     const start = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (...args) {
       start.apply(this, args);
       const file = this.buffer && buffers.get(this.buffer);
-      if (file) probe.effects.push(file);
-      if (file === sharedFile && this.buffer) {
-        const now = this.context.currentTime;
+      if (!file || !this.buffer) return;
+      const now = this.context.currentTime;
+      if (file === sharedFile) {
         if (sharedClip && sharedClip.endsAt > now) probe.sharedClipOverlaps++;
+        if (probe.effects.at(-1) === matchFile && matchClip && matchClip.endsAt > now) probe.matchRevealOverlaps++;
         sharedClip = { voice: this, endsAt: now + this.buffer.duration };
       }
+      if (file === matchFile) matchClip = { voice: this, endsAt: now + this.buffer.duration };
+      probe.effects.push(file);
     };
     const stop = AudioBufferSourceNode.prototype.stop;
     AudioBufferSourceNode.prototype.stop = function (...args) {
       stop.apply(this, args);
       if (sharedClip?.voice === this) sharedClip.endsAt = args[0] ?? this.context.currentTime;
+      if (matchClip?.voice === this) matchClip.endsAt = args[0] ?? this.context.currentTime;
     };
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
@@ -495,7 +507,45 @@ async function observeNativeAudio(page: Page) {
         if (screen && probe.screens.at(-1) !== screen) probe.screens.push(screen);
       }
     }).observe(document, { subtree: true, attributes: true, attributeFilter: ['aria-label'] });
-  }, { musicFile: audioAssets.files.background_music, sharedFile: audioAssets.files.shelf_reveal });
+  }, {
+    musicFile: audioAssets.files.background_music,
+    sharedFile: audioAssets.files.shelf_reveal,
+    matchFile: audioAssets.files.match_three,
+  });
+}
+
+async function openWithStudioAudioProbe(page: Page) {
+  let releaseEntry!: () => void;
+  const phaserReady = new Promise<void>(resolve => { releaseEntry = resolve; });
+  // Wrap the actual scene host before startup so shared OGG files can be attributed to their events.
+  await page.route('**/assets/index-*.js', async route => {
+    await phaserReady;
+    await route.continue();
+  }, { times: 1 });
+  try {
+    await page.goto('./', { waitUntil: 'commit' });
+    await page.locator('link[rel="modulepreload"][href*="/phaser-"]').evaluate(async link => {
+      const exports: Record<string, typeof Phaser> = await import((link as HTMLLinkElement).href);
+      const phaser = Object.values(exports).find(value => value?.Scenes?.SceneManager);
+      if (!phaser) throw new Error('Phaser scene manager was not found');
+      const manager = phaser.Scenes.SceneManager.prototype;
+      const start = manager.start;
+      manager.start = function (key, data) {
+        if (key === 'studio') {
+          const { host } = this.getScene(key) as unknown as { host: StudioHost };
+          const audio = host.audio;
+          host.audio = (...args) => {
+            window.studioAudio.events.push(args[0]);
+            audio(...args);
+          };
+          manager.start = start;
+        }
+        return start.call(this, key, data);
+      };
+    });
+  } finally {
+    releaseEntry();
+  }
 }
 
 function musicState(page: Page) {
@@ -511,6 +561,10 @@ function musicState(page: Page) {
 
 function effectsPlayed(page: Page) {
   return page.evaluate(() => window.studioAudio.effects);
+}
+
+function audioEvents(page: Page) {
+  return page.evaluate(() => window.studioAudio.events);
 }
 
 async function waitForEffects(page: Page) {
@@ -644,7 +698,7 @@ test.describe('original audio playback', () => {
     const files = audioAssets.files;
     await mocked(page);
     await observeNativeAudio(page);
-    await page.goto('./');
+    await openWithStudioAudioProbe(page);
     await expect(canvas(page, 'Play')).toBeVisible();
     await waitForEffects(page);
     await click(page, 24, 24);
@@ -673,6 +727,7 @@ test.describe('original audio playback', () => {
     expect((await effectsPlayed(page)).slice(beforeCancel)).toEqual([files.item_pickup]);
 
     const beforeControls = (await effectsPlayed(page)).length;
+    const beforeControlEvents = (await audioEvents(page)).length;
     const moveSounds = [files.item_pickup, files.item_place];
     await inputMove(page, move, 'drag');
     expect((await effectsPlayed(page)).slice(beforeControls)).toEqual(moveSounds);
@@ -680,6 +735,9 @@ test.describe('original audio playback', () => {
     await inputMove(page, nextMove, 'click');
     expect((await readSave(page))?.active?.moves).toEqual([move, nextMove]);
     expect((await effectsPlayed(page)).slice(beforeControls)).toEqual([...moveSounds, ...moveSounds]);
+    expect((await audioEvents(page)).slice(beforeControlEvents)).toEqual([
+      'item_pickup', 'item_place', 'item_pickup', 'item_place',
+    ]);
     await click(page, 91, 739);
     expect((await readSave(page))?.active?.moves).toEqual([move]);
     await click(page, 91, 739);
@@ -697,10 +755,16 @@ test.describe('original audio playback', () => {
 
     await mockValue(page, mock => { mock.shift = 91_000; });
     const start = (await effectsPlayed(page)).length;
+    const eventStart = (await audioEvents(page)).length;
     await completeFirst(page);
     await expect.poll(() => mockValue(page, mock => mock.interstitial.length)).toBe(1);
-    const winSounds = [...moveSounds, ...moveSounds, ...moveSounds, files.match_three, ...moveSounds, files.match_three];
+    const matchSounds = [files.item_pickup, files.match_three];
+    const winSounds = [...moveSounds, ...moveSounds, ...matchSounds, ...matchSounds];
     expect((await effectsPlayed(page)).slice(start)).toEqual(winSounds);
+    expect((await audioEvents(page)).slice(eventStart)).toEqual([
+      'item_pickup', 'item_place', 'item_pickup', 'item_place',
+      'item_pickup', 'match_three', 'item_pickup', 'match_three',
+    ]);
     await mockValue(page, mock => {
       const ad = mock.interstitial[0];
       ad.onClose(true);
@@ -752,7 +816,7 @@ test.describe('original audio playback', () => {
       },
     ];
     for (const { title, id, matches, setup, moveIndex = 0, playSetup = false } of scenarios) {
-      test(`${title} plays one rear-row cue with no overlapping pickup sample`, async ({ page }) => {
+      test(`${title} plays one rear-row cue without overlapping samples`, async ({ page }) => {
         const files = audioAssets.files;
         const level = LEVELS[id - 1];
         const move = level.solution[moveIndex];
@@ -765,7 +829,7 @@ test.describe('original audio playback', () => {
           }));
         }, { key: saveKey, id, moves: savedMoves });
         await observeNativeAudio(page);
-        await page.goto('./');
+        await openWithStudioAudioProbe(page);
         await expect(canvas(page, 'Play')).toBeVisible();
         await waitForEffects(page);
         await click(page, 240, 621);
@@ -778,12 +842,18 @@ test.describe('original audio playback', () => {
           expect((await effectsPlayed(page)).slice(start)).toEqual([files.item_pickup, files.item_place]);
         }
         const start = (await effectsPlayed(page)).length;
-        await inputMove(page, move, 'click', level.board.length);
-        const expected = [
-          files.item_pickup,
-          ...(matches ? [files.item_place, files.match_three] : []),
-          files.shelf_reveal,
+        const eventStart = (await audioEvents(page)).length;
+        const from = slotPoint(move.from, level.board.length);
+        const to = slotPoint(move.to, level.board.length);
+        await click(page, from.x, from.y);
+        expect((await effectsPlayed(page)).slice(start)).toEqual([files.item_pickup]);
+        await click(page, to.x, to.y);
+        const expectedEvents: AudioEffect[] = [
+          'item_pickup',
+          ...(matches ? ['match_three' as const] : []),
+          'shelf_reveal',
         ];
+        const expected = expectedEvents.map(event => files[event]);
         await expect.poll(async () => (await effectsPlayed(page)).slice(start)).toEqual(expected);
         expect((await readSave(page))?.active?.moves).toEqual([...history, move]);
 
@@ -793,7 +863,11 @@ test.describe('original audio playback', () => {
           return (await readSave(page))?.active?.moves;
         }).toEqual(history);
         expect((await effectsPlayed(page)).slice(start)).toEqual([...expected, files.ui_click]);
-        expect(await page.evaluate(() => window.studioAudio.sharedClipOverlaps)).toBe(0);
+        expect((await audioEvents(page)).slice(eventStart)).toEqual([...expectedEvents, 'ui_click']);
+        expect(await page.evaluate(() => ({
+          pickup: window.studioAudio.sharedClipOverlaps,
+          match: window.studioAudio.matchRevealOverlaps,
+        }))).toEqual({ pickup: 0, match: 0 });
       });
     }
   });

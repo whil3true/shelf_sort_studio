@@ -14,7 +14,7 @@ import { configureCamera } from './viewport';
 export interface StudioHost {
   ready(): void;
   playing(active: boolean): void;
-  audio(event: AudioEffect): void;
+  audio(event: AudioEffect, replaces?: AudioEffect): void;
   volumesChanged(): void;
   readonly rewardedAvailable: boolean;
   interstitial(): Promise<void>;
@@ -503,11 +503,8 @@ export class StudioScene extends Phaser.Scene {
     this.hint = null;
     this.notice = null;
     this.store.saveRun(this.level, session);
-    const stages = boardAnimationStages(result.events);
-    const firstStage = stages.next();
-    // An immediate reveal is the landing cue. Match-first moves keep their existing cues.
-    if (firstStage.done || firstStage.value.matching) this.host.audio('item_place');
-    if (firstStage.done) {
+    if (!result.events.length) {
+      this.host.audio('item_place');
       this.draw();
       return true;
     }
@@ -521,11 +518,12 @@ export class StudioScene extends Phaser.Scene {
       if (move.to.shelf === index) front[move.to.slot] = landed;
       return { ...shelf, front };
     });
-    this.animateBoard(stages, firstStage);
+    this.animateBoard(boardAnimationStages(result.events));
     return true;
   }
 
-  private animateBoard(stages: ReturnType<typeof boardAnimationStages>, stage = stages.next()) {
+  private animateBoard(stages: ReturnType<typeof boardAnimationStages>, previousEffect: AudioEffect | null = null) {
+    const stage = stages.next();
     if (stage.done) {
       this.beforeAnimation = null;
       this.motion = null;
@@ -540,7 +538,8 @@ export class StudioScene extends Phaser.Scene {
     this.motion = motion;
     this.draw();
 
-    if (effect) this.host.audio(effect);
+    if (effect === 'shelf_reveal' && previousEffect === 'match_three') this.host.audio(effect, previousEffect);
+    else if (effect) this.host.audio(effect);
 
     this.tweens.addCounter({
       from: 0, to: 1, duration: matching ? 155 : 210,
@@ -557,7 +556,7 @@ export class StudioScene extends Phaser.Scene {
           const [front, ...stock] = shelf.stock;
           return { front, stock };
         });
-        this.animateBoard(stages);
+        this.animateBoard(stages, effect);
       },
     });
   }

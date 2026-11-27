@@ -3,7 +3,7 @@ import type { Volumes } from '../platform/Storage.ts';
 
 export interface AudioOutput {
   unlock(): void;
-  play(effect: AudioEffect): void;
+  play(effect: AudioEffect, replaces?: AudioEffect): void;
   setVolumes(volumes: Readonly<Volumes>): void;
   setPaused(paused: boolean): void;
 }
@@ -16,9 +16,8 @@ export class BrowserAudioOutput implements AudioOutput {
   private gain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
   private readonly fallbackEffects = new Map<string, HTMLAudioElement>();
-  private readonly voices = new Set<AudioBufferSourceNode>();
+  private readonly voices = new Map<AudioBufferSourceNode, string>();
   private readonly sharedShelfPath: string | null;
-  private sharedShelfVoice: AudioBufferSourceNode | null = null;
   private effectsResume: Promise<void> | null = null;
   private effectsPauseRevision = 0;
   private volumes: Readonly<Volumes> = { music: 0, effects: 0 };
@@ -92,9 +91,8 @@ export class BrowserAudioOutput implements AudioOutput {
     if (paused) {
       this.effectsPauseRevision++;
       this.effectsResume = null;
-      for (const voice of this.voices) voice.stop();
+      for (const voice of this.voices.keys()) voice.stop();
       this.voices.clear();
-      this.sharedShelfVoice = null;
       for (const player of this.fallbackEffects.values()) player.pause();
       void this.context?.suspend().catch(() => {});
     } else if (this.unlocked) {
@@ -104,18 +102,21 @@ export class BrowserAudioOutput implements AudioOutput {
     this.syncMusic();
   }
 
-  play(effect: AudioEffect): void {
+  play(effect: AudioEffect, replaces?: AudioEffect): void {
     const path = this.pathFor(effect);
     if (!path || !this.unlocked || this.paused || !this.volumes.effects) return;
+    const replacedPath = replaces ? this.pathFor(replaces) : null;
     const buffer = this.buffers.get(path);
     const fallback = this.fallbackEffects.get(path);
     if (!buffer) {
-      if (fallback && fallback.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) this.playFallback(fallback);
+      if (fallback && fallback.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        if (replacedPath) this.stopEffect(replacedPath);
+        this.playFallback(fallback);
+      }
       return;
     }
-    const sharedShelfEffect = path === this.sharedShelfPath;
     if (this.context?.state === 'running') {
-      this.startEffect(buffer, sharedShelfEffect);
+      this.startEffect(buffer, path, replacedPath);
       return;
     }
 
@@ -125,7 +126,7 @@ export class BrowserAudioOutput implements AudioOutput {
     const deadline = performance.now() + 100;
     void this.effectsResume?.then(() => {
       if (revision === this.effectsPauseRevision && performance.now() <= deadline) {
-        this.startEffect(buffer, sharedShelfEffect);
+        this.startEffect(buffer, path, replacedPath);
       }
     }, () => {});
   }
@@ -155,7 +156,16 @@ export class BrowserAudioOutput implements AudioOutput {
     } catch { /* A later gesture may be allowed to play. */ }
   }
 
-  private startEffect(buffer: AudioBuffer, sharedShelfEffect: boolean): void {
+  private stopEffect(path: string): void {
+    for (const [voice, playingPath] of this.voices) {
+      if (playingPath !== path) continue;
+      voice.stop();
+      this.voices.delete(voice);
+    }
+    this.fallbackEffects.get(path)?.pause();
+  }
+
+  private startEffect(buffer: AudioBuffer, path: string, replacedPath: string | null): void {
     if (this.paused || !this.volumes.effects || this.context?.state !== 'running' || !this.gain) return;
     try {
       const voice = this.context.createBufferSource();
@@ -163,19 +173,14 @@ export class BrowserAudioOutput implements AudioOutput {
       voice.connect(this.gain);
       voice.onended = () => {
         this.voices.delete(voice);
-        if (this.sharedShelfVoice === voice) this.sharedShelfVoice = null;
         voice.disconnect();
       };
       // A quick release can reveal a row while the pickup sample is still playing.
       // Restart that sample on its own voice without suppressing either action.
-      if (sharedShelfEffect && this.sharedShelfVoice) {
-        this.sharedShelfVoice.stop();
-        this.voices.delete(this.sharedShelfVoice);
-        this.sharedShelfVoice = null;
-      }
+      if (replacedPath) this.stopEffect(replacedPath);
+      if (path === this.sharedShelfPath && path !== replacedPath) this.stopEffect(path);
       voice.start();
-      this.voices.add(voice);
-      if (sharedShelfEffect) this.sharedShelfVoice = voice;
+      this.voices.set(voice, path);
     } catch { /* Unsupported or interrupted playback is silent. */ }
   }
 
@@ -259,7 +264,7 @@ export class AudioRuntime {
   }
 
   unlock() { this.output.unlock(); }
-  play(effect: AudioEffect) { this.output.play(effect); }
+  play(effect: AudioEffect, replaces?: AudioEffect) { this.output.play(effect, replaces); }
   setVolumes(volumes: Readonly<Volumes>) { this.output.setVolumes(volumes); }
 
   pauseFor(reason: string, paused: boolean) {
